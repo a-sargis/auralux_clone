@@ -23,17 +23,20 @@ jobs:
         with:
           channel: 'stable'
 
-      - name: Generate Android project structure & inject code
+      - name: Create Clean Flutter Project & Inject Code
         run: |
           cp lib/main.dart /tmp/main.dart
-          flutter create --platforms=android --org com.sargis.auralux --project-name auralux_constellations .
-          cp /tmp/main.dart lib/main.dart
+          flutter create --platforms=android --org com.sargis.auralux --project-name auralux_constellations /tmp/auralux_app
+          cp /tmp/main.dart /tmp/auralux_app/lib/main.dart
+          cd /tmp/auralux_app
+          flutter analyze
 
       - name: Build Release APK
-        run: flutter build apk --release
+        working-directory: /tmp/auralux_app
+        run: flutter build apk --release --no-tree-shake-icons
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Auralux-Constellations-APK
-          path: build/app/outputs/flutter-apk/app-release.apk
+          path: /tmp/auralux_app/build/app/outputs/flutter-apk/app-release.apk
