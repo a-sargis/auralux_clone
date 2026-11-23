@@ -28,7 +28,7 @@ class AuraluxApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Auralux: Constellations',
+      title: 'Auralux: Constellations & Galaxies',
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark().copyWith(
         scaffoldBackgroundColor: const Color(0xFF02040A),
@@ -151,30 +151,29 @@ class CosmicAudioEngine {
         sample += ((1.0 - chordBlend) * wave1 + chordBlend * wave2) * vAmp * lfo;
       }
 
-      const double stepSec = 2.0;
-      final int bellIdx = (t / stepSec).floor();
-      final double localT = t - bellIdx * stepSec;
-      final double bellFreq = bellNotes[(bellIdx * 3) % bellNotes.length];
-      final double bellEnv = exp(-localT * 2.6) * (1.0 - exp(-localT * 35.0));
-      final double bellWave = sin(2 * pi * bellFreq * localT) +
-          0.3 * sin(2 * pi * (bellFreq * 2.0) * localT);
-      sample += bellWave * bellEnv * 0.14;
+      for (int b = 0; b < bellNotes.length; b++) {
+        final double strikeTime = (b * (durationSec / bellNotes.length)) + 0.5;
+        final double dtBell = t - strikeTime;
+        if (dtBell > 0.0 && dtBell < 2.8) {
+          final double bellEnv = exp(-dtBell * 2.2);
+          final double f = bellNotes[b];
+          sample += sin(2 * pi * f * dtBell) * bellEnv * 0.065;
+          sample += sin(2 * pi * (f * 2.01) * dtBell) * bellEnv * 0.032;
+        }
+      }
 
-      double edgeFade = 1.0;
-      if (t < 0.4) edgeFade = t / 0.4;
-      if (t > durationSec - 0.4) edgeFade = (durationSec - t) / 0.4;
-      sample *= (0.85 + 0.15 * edgeFade);
-
-      final int pcm = (sample.clamp(-0.95, 0.95) * 32767).toInt();
-      data.setInt16(44 + i * 2, pcm, Endian.little);
+      sample = sample.clamp(-1.0, 1.0);
+      final int s16 = (sample * 32767.0).toInt();
+      data.setInt16(44 + i * 2, s16, Endian.little);
     }
+
     return data.buffer.asUint8List();
   }
 
   Uint8List _generateChordChimeWav(
-    List<double> freqs, {
+    List<double> frequencies, {
     required double durationSec,
-    double volume = 0.4,
+    double volume = 0.5,
     bool arpeggio = false,
     int sampleRate = 22050,
   }) {
@@ -185,53 +184,71 @@ class CosmicAudioEngine {
     for (int i = 0; i < numSamples; i++) {
       final double t = i / sampleRate;
       double sample = 0.0;
-      for (int idx = 0; idx < freqs.length; idx++) {
-        final double delay = arpeggio ? idx * 0.055 : 0.0;
-        if (t < delay) continue;
-        final double nt = t - delay;
-        final double env = exp(-nt * 5.2) * (1.0 - exp(-nt * 80.0));
-        final double f = freqs[idx];
-        sample += (sin(2 * pi * f * nt) + 0.25 * sin(2 * pi * f * 2 * nt)) *
-            env /
-            sqrt(freqs.length);
+
+      for (int v = 0; v < frequencies.length; v++) {
+        final double startDelay = arpeggio ? (v * 0.065) : 0.0;
+        if (t < startDelay) continue;
+        final double noteT = t - startDelay;
+        final double env = exp(-noteT * (arpeggio ? 4.2 : 5.5));
+        final double f = frequencies[v];
+        final double wave = sin(2 * pi * f * noteT) +
+            0.35 * sin(2 * pi * (f * 2.0) * noteT) +
+            0.15 * sin(2 * pi * (f * 3.0) * noteT);
+        sample += wave * env * (1.0 / frequencies.length);
       }
-      final int pcm = ((sample * volume).clamp(-0.95, 0.95) * 32767).toInt();
-      data.setInt16(44 + i * 2, pcm, Endian.little);
+
+      sample = (sample * volume).clamp(-1.0, 1.0);
+      final int s16 = (sample * 32767.0).toInt();
+      data.setInt16(44 + i * 2, s16, Endian.little);
     }
+
     return data.buffer.asUint8List();
   }
 
   void _writeWavHeader(ByteData data, int numSamples, int sampleRate) {
-    final int dataSize = numSamples * 2;
-    final int fileSize = 36 + dataSize;
-    void writeStr(int offset, String s) {
-      for (int i = 0; i < s.length; i++) {
-        data.setUint8(offset + i, s.codeUnitAt(i));
-      }
-    }
+    const int numChannels = 1;
+    const int bitsPerSample = 16;
+    final int byteRate = sampleRate * numChannels * (bitsPerSample ~/ 8);
+    final int blockAlign = numChannels * (bitsPerSample ~/ 8);
+    final int subChunk2Size = numSamples * numChannels * (bitsPerSample ~/ 8);
+    final int chunkSize = 36 + subChunk2Size;
 
-    writeStr(0, 'RIFF');
-    data.setUint32(4, fileSize, Endian.little);
-    writeStr(8, 'WAVE');
-    writeStr(12, 'fmt ');
+    data.setUint8(0, 0x52); // 'R'
+    data.setUint8(1, 0x49); // 'I'
+    data.setUint8(2, 0x46); // 'F'
+    data.setUint8(3, 0x46); // 'F'
+    data.setUint32(4, chunkSize, Endian.little);
+    data.setUint8(8, 0x57); // 'W'
+    data.setUint8(9, 0x41); // 'A'
+    data.setUint8(10, 0x56); // 'V'
+    data.setUint8(11, 0x45); // 'E'
+
+    data.setUint8(12, 0x66); // 'f'
+    data.setUint8(13, 0x6D); // 'm'
+    data.setUint8(14, 0x74); // 't'
+    data.setUint8(15, 0x20); // ' '
     data.setUint32(16, 16, Endian.little);
-    data.setUint16(20, 1, Endian.little);
-    data.setUint16(22, 1, Endian.little);
+    data.setUint16(20, 1, Endian.little); // PCM
+    data.setUint16(22, numChannels, Endian.little);
     data.setUint32(24, sampleRate, Endian.little);
-    data.setUint32(28, sampleRate * 2, Endian.little);
-    data.setUint16(32, 2, Endian.little);
-    data.setUint16(34, 16, Endian.little);
-    writeStr(36, 'data');
-    data.setUint32(40, dataSize, Endian.little);
+    data.setUint32(28, byteRate, Endian.little);
+    data.setUint16(32, blockAlign, Endian.little);
+    data.setUint16(34, bitsPerSample, Endian.little);
+
+    data.setUint8(36, 0x64); // 'd'
+    data.setUint8(37, 0x61); // 'a'
+    data.setUint8(38, 0x74); // 't'
+    data.setUint8(39, 0x61); // 'a'
+    data.setUint32(40, subChunk2Size, Endian.little);
   }
 }
 
 enum Faction { neutral, player, enemy1, enemy2 }
 
-Color factionColor(Faction f) {
-  switch (f) {
+Color factionColor(Faction faction) {
+  switch (faction) {
     case Faction.neutral:
-      return const Color(0xFF75869B);
+      return const Color(0xFF6B7280);
     case Faction.player:
       return const Color(0xFF00E5FF);
     case Faction.enemy1:
@@ -241,11 +258,112 @@ Color factionColor(Faction f) {
   }
 }
 
+enum GalaxyType {
+  andromeda,
+  labyrinth,
+  singularity,
+  deepSpace,
+}
+
+class GalaxyDefinition {
+  final GalaxyType type;
+  final String title;
+  final String subtitle;
+  final String description;
+  final Color primaryColor;
+  final IconData icon;
+  final List<ConstellationType> constellations;
+
+  const GalaxyDefinition({
+    required this.type,
+    required this.title,
+    required this.subtitle,
+    required this.description,
+    required this.primaryColor,
+    required this.icon,
+    required this.constellations,
+  });
+}
+
 enum ConstellationType {
+  // Galaxy 1: Andromeda
   twinSpiral,
   ringCluster,
   binaryFront,
   supernovaCross,
+  // Galaxy 2: Labyrinth
+  mazeCorridors,
+  citadelWalls,
+  chamberMatrix,
+  // Galaxy 3: Singularity
+  wormholeGate,
+  twinWormholes,
+  singularityCrucible,
+  // Galaxy 4: Deep Space
+  labyrinthWormhole,
+  pulsarOmega,
+}
+
+final List<GalaxyDefinition> galaxies = [
+  const GalaxyDefinition(
+    type: GalaxyType.andromeda,
+    title: 'ГАЛАКТИКА АНДРОМЕДА',
+    subtitle: 'Классические звёздные фронты',
+    description: 'Спиральные рукава, двойные кольца орбит и симметричные звёздные скопления.',
+    primaryColor: Color(0xFF00E5FF),
+    icon: Icons.blur_circular,
+    constellations: [
+      ConstellationType.twinSpiral,
+      ConstellationType.ringCluster,
+      ConstellationType.binaryFront,
+      ConstellationType.supernovaCross,
+    ],
+  ),
+  const GalaxyDefinition(
+    type: GalaxyType.labyrinth,
+    title: 'ГАЛАКТИКА ЛАБИРИНТ',
+    subtitle: 'Космические стены и коридоры',
+    description: 'Лабиринты из энергобарьеров, защитные цитадели и изолированные шлюзы.',
+    primaryColor: Color(0xFF76FF03),
+    icon: Icons.grid_4x4,
+    constellations: [
+      ConstellationType.mazeCorridors,
+      ConstellationType.citadelWalls,
+      ConstellationType.chamberMatrix,
+    ],
+  ),
+  const GalaxyDefinition(
+    type: GalaxyType.singularity,
+    title: 'ГАЛАКТИКА СИНГУЛЯРНОСТЬ',
+    subtitle: 'Червоточины и полярные джеты',
+    description: 'Накапливайте частицы в червоточинах и обрушивайте релятивистские потоки плазмы.',
+    primaryColor: Color(0xFFE040FB),
+    icon: Icons.cyclone,
+    constellations: [
+      ConstellationType.wormholeGate,
+      ConstellationType.twinWormholes,
+      ConstellationType.singularityCrucible,
+    ],
+  ),
+  const GalaxyDefinition(
+    type: GalaxyType.deepSpace,
+    title: 'ГЛУБОКИЙ КОСМОС',
+    subtitle: 'Атомные ядра и гипер-аномалии',
+    description: 'Лабиринты с червоточинами и мощные звёзды 3+ уровня с перекрёстными атомными орбитами.',
+    primaryColor: Color(0xFFFF9100),
+    icon: Icons.all_inclusive,
+    constellations: [
+      ConstellationType.labyrinthWormhole,
+      ConstellationType.pulsarOmega,
+    ],
+  ),
+];
+
+GalaxyDefinition galaxyForType(ConstellationType type) {
+  for (final g in galaxies) {
+    if (g.constellations.contains(type)) return g;
+  }
+  return galaxies[0];
 }
 
 String constellationTitle(ConstellationType type) {
@@ -258,6 +376,22 @@ String constellationTitle(ConstellationType type) {
       return 'CYGNUS BINARY';
     case ConstellationType.supernovaCross:
       return 'PULSAR CROSS';
+    case ConstellationType.mazeCorridors:
+      return 'LABYRINTH NEXUS';
+    case ConstellationType.citadelWalls:
+      return 'CITADEL BARRIER';
+    case ConstellationType.chamberMatrix:
+      return 'CHAMBER MATRIX';
+    case ConstellationType.wormholeGate:
+      return 'SINGULARITY GATE';
+    case ConstellationType.twinWormholes:
+      return 'TWIN HORIZONS';
+    case ConstellationType.singularityCrucible:
+      return 'COSMIC CRUCIBLE';
+    case ConstellationType.labyrinthWormhole:
+      return 'ASTEROID CHASM';
+    case ConstellationType.pulsarOmega:
+      return 'PULSAR OMEGA';
   }
 }
 
@@ -271,6 +405,22 @@ String constellationSubtitle(ConstellationType type) {
       return 'Симметричный бинарный фронт';
     case ConstellationType.supernovaCross:
       return 'Крестообразный пульсар с кластерами';
+    case ConstellationType.mazeCorridors:
+      return 'Лабиринт с защитными коридорами';
+    case ConstellationType.citadelWalls:
+      return 'Оборонительные стены и цитадели';
+    case ConstellationType.chamberMatrix:
+      return 'Четыре изолированных сектора';
+    case ConstellationType.wormholeGate:
+      return 'Центральная червоточина с джетами';
+    case ConstellationType.twinWormholes:
+      return 'Две червоточины с перекрёстными джетами';
+    case ConstellationType.singularityCrucible:
+      return 'Битва вокруг гипер-сингулярности';
+    case ConstellationType.labyrinthWormhole:
+      return 'Лабиринт из стен вокруг червоточины';
+    case ConstellationType.pulsarOmega:
+      return 'Звёзды 3+ уровня с атомными орбитами';
   }
 }
 
@@ -439,12 +589,145 @@ class RendezvousPoint {
   }
 }
 
+class ObstacleWall {
+  final int id;
+  final Offset start;
+  final Offset end;
+  final double thickness;
+  final Color? glowColor;
+
+  ObstacleWall({
+    required this.id,
+    required this.start,
+    required this.end,
+    this.thickness = 16.0,
+    this.glowColor,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'sx': start.dx,
+        'sy': start.dy,
+        'ex': end.dx,
+        'ey': end.dy,
+        'th': thickness,
+        'color': glowColor?.toARGB32(),
+      };
+
+  factory ObstacleWall.fromJson(Map<String, dynamic> json) {
+    final int? colorVal = json['color'] as int?;
+    return ObstacleWall(
+      id: json['id'] as int? ?? 0,
+      start: Offset(
+          (json['sx'] as num).toDouble(), (json['sy'] as num).toDouble()),
+      end: Offset(
+          (json['ex'] as num).toDouble(), (json['ey'] as num).toDouble()),
+      thickness: (json['th'] as num?)?.toDouble() ?? 16.0,
+      glowColor: colorVal != null ? Color(colorVal) : null,
+    );
+  }
+}
+
+class Wormhole {
+  final int id;
+  Offset pos;
+  final double radius;
+  final int criticalMass;
+  int storedUnits;
+  Faction lastAbsorbedFaction;
+  final Map<Faction, int> factionContributions;
+  double poleAngle;
+  bool isErupting;
+  double eruptionTimer;
+  final double eruptionDuration;
+  double jetAccumulator;
+  double spinPhase;
+  double pulsePhase;
+
+  Wormhole({
+    required this.id,
+    required this.pos,
+    this.radius = 36.0,
+    this.criticalMass = 30,
+    this.storedUnits = 0,
+    this.lastAbsorbedFaction = Faction.neutral,
+    Map<Faction, int>? factionContributions,
+    this.poleAngle = 0.0,
+    this.isErupting = false,
+    this.eruptionTimer = 0.0,
+    this.eruptionDuration = 3.5,
+    this.jetAccumulator = 0.0,
+    this.spinPhase = 0.0,
+    this.pulsePhase = 0.0,
+  }) : factionContributions = factionContributions ??
+            {
+              Faction.player: 0,
+              Faction.enemy1: 0,
+              Faction.enemy2: 0,
+            };
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'dx': pos.dx,
+        'dy': pos.dy,
+        'r': radius,
+        'cm': criticalMass,
+        'stored': storedUnits,
+        'lastFaction': lastAbsorbedFaction.index,
+        'contr': factionContributions
+            .map((k, v) => MapEntry(k.index.toString(), v)),
+        'poleAng': poleAngle,
+        'isErupting': isErupting,
+        'erTimer': eruptionTimer,
+        'erDur': eruptionDuration,
+        'spin': spinPhase,
+        'pulse': pulsePhase,
+      };
+
+  factory Wormhole.fromJson(Map<String, dynamic> json) {
+    final contrRaw = json['contr'] as Map<String, dynamic>?;
+    final Map<Faction, int> contr = {
+      Faction.player: 0,
+      Faction.enemy1: 0,
+      Faction.enemy2: 0,
+    };
+    if (contrRaw != null) {
+      contrRaw.forEach((k, v) {
+        final fIdx = int.tryParse(k);
+        if (fIdx != null && fIdx >= 0 && fIdx < Faction.values.length) {
+          contr[Faction.values[fIdx]] = (v as num).toInt();
+        }
+      });
+    }
+
+    final int? lfIdx = json['lastFaction'] as int?;
+    return Wormhole(
+      id: json['id'] as int,
+      pos: Offset(
+          (json['dx'] as num).toDouble(), (json['dy'] as num).toDouble()),
+      radius: (json['r'] as num?)?.toDouble() ?? 36.0,
+      criticalMass: json['cm'] as int? ?? 30,
+      storedUnits: json['stored'] as int? ?? 0,
+      lastAbsorbedFaction:
+          lfIdx != null ? Faction.values[lfIdx] : Faction.neutral,
+      factionContributions: contr,
+      poleAngle: (json['poleAng'] as num?)?.toDouble() ?? 0.0,
+      isErupting: json['isErupting'] as bool? ?? false,
+      eruptionTimer: (json['erTimer'] as num?)?.toDouble() ?? 0.0,
+      eruptionDuration: (json['erDur'] as num?)?.toDouble() ?? 3.5,
+      spinPhase: (json['spin'] as num?)?.toDouble() ?? 0.0,
+      pulsePhase: (json['pulse'] as num?)?.toDouble() ?? 0.0,
+    );
+  }
+}
+
 class SwarmUnit {
   Offset pos;
   Offset vel;
   Faction faction;
   StarNode? targetNode;
   RendezvousPoint? targetRendezvous;
+  Wormhole? targetWormhole;
   bool isOrbiting;
   bool isUpgradingTarget;
   double orbitAngle;
@@ -459,6 +742,7 @@ class SwarmUnit {
     required this.faction,
     this.targetNode,
     this.targetRendezvous,
+    this.targetWormhole,
     this.isOrbiting = true,
     this.isUpgradingTarget = false,
     required this.orbitAngle,
@@ -475,6 +759,7 @@ class SwarmUnit {
         'faction': faction.index,
         'targetNodeId': targetNode?.id,
         'targetRvId': targetRendezvous?.id,
+        'targetWhId': targetWormhole?.id,
         'isOrbiting': isOrbiting,
         'isUpgradingTarget': isUpgradingTarget,
         'orbitAngle': orbitAngle,
@@ -487,9 +772,11 @@ class SwarmUnit {
     Map<String, dynamic> json,
     Map<int, StarNode> nodeMap,
     Map<int, RendezvousPoint> rvMap,
+    Map<int, Wormhole> whMap,
   ) {
     final int? tNodeId = json['targetNodeId'] as int?;
     final int? tRvId = json['targetRvId'] as int?;
+    final int? tWhId = json['targetWhId'] as int?;
     return SwarmUnit(
       pos: Offset(
         (json['dx'] as num).toDouble(),
@@ -502,6 +789,7 @@ class SwarmUnit {
       faction: Faction.values[json['faction'] as int],
       targetNode: tNodeId != null ? nodeMap[tNodeId] : null,
       targetRendezvous: tRvId != null ? rvMap[tRvId] : null,
+      targetWormhole: tWhId != null ? whMap[tWhId] : null,
       isOrbiting: json['isOrbiting'] as bool? ?? true,
       isUpgradingTarget: json['isUpgradingTarget'] as bool? ?? false,
       orbitAngle: (json['orbitAngle'] as num).toDouble(),
@@ -539,8 +827,8 @@ class PulseWave {
   PulseWave({
     required this.pos,
     required this.color,
-    this.radius = 10.0,
-    this.maxRadius = 95.0,
+    required this.maxRadius,
+    this.radius = 4.0,
     this.life = 1.0,
   });
 }
@@ -550,6 +838,7 @@ class FloatingText {
   String text;
   Color color;
   double life;
+
   FloatingText({
     required this.pos,
     required this.text,
@@ -558,12 +847,13 @@ class FloatingText {
   });
 }
 
-// Слепок состояния созвездия (используется и для сохранения на устройство, и для рендера превьюшек)
 class ConstellationSaveData {
   final ConstellationType type;
   final List<StarNode> nodes;
   final List<RendezvousPoint> rendezvousPoints;
   final List<SwarmUnit> units;
+  final List<ObstacleWall> obstacles;
+  final List<Wormhole> wormholes;
   final Faction? winner;
   final Offset cameraOffset;
   final double cameraZoom;
@@ -574,6 +864,8 @@ class ConstellationSaveData {
     required this.nodes,
     required this.rendezvousPoints,
     required this.units,
+    this.obstacles = const [],
+    this.wormholes = const [],
     required this.winner,
     required this.cameraOffset,
     required this.cameraZoom,
@@ -590,6 +882,8 @@ class ConstellationSaveData {
         'nodes': nodes.map((n) => n.toJson()).toList(),
         'rv': rendezvousPoints.map((r) => r.toJson()).toList(),
         'units': units.where((u) => !u.dead).map((u) => u.toJson()).toList(),
+        'obs': obstacles.map((o) => o.toJson()).toList(),
+        'wh': wormholes.map((w) => w.toJson()).toList(),
         'winner': winner?.index,
         'camDx': cameraOffset.dx,
         'camDy': cameraOffset.dy,
@@ -613,9 +907,18 @@ class ConstellationSaveData {
         .toList();
     final rvMap = {for (final r in rvList) r.id: r};
 
+    final whList = (json['wh'] as List? ?? [])
+        .map((w) => Wormhole.fromJson(w as Map<String, dynamic>))
+        .toList();
+    final whMap = {for (final w in whList) w.id: w};
+
+    final obsList = (json['obs'] as List? ?? [])
+        .map((o) => ObstacleWall.fromJson(o as Map<String, dynamic>))
+        .toList();
+
     final unitsList = (json['units'] as List)
         .map((u) =>
-            SwarmUnit.fromJson(u as Map<String, dynamic>, nodeMap, rvMap))
+            SwarmUnit.fromJson(u as Map<String, dynamic>, nodeMap, rvMap, whMap))
         .toList();
 
     final int? winnerIdx = json['winner'] as int?;
@@ -625,6 +928,8 @@ class ConstellationSaveData {
       nodes: nodesList,
       rendezvousPoints: rvList,
       units: unitsList,
+      obstacles: obsList,
+      wormholes: whList,
       winner: winnerIdx != null ? Faction.values[winnerIdx] : null,
       cameraOffset: Offset(
         (json['camDx'] as num?)?.toDouble() ?? 0.0,
@@ -645,17 +950,19 @@ class GameScreen extends StatefulWidget {
 
 class _GameScreenState extends State<GameScreen>
     with SingleTickerProviderStateMixin, WidgetsBindingObserver {
-  late Ticker _ticker;
+  late final Ticker _ticker;
   Duration _lastTime = Duration.zero;
   double _globalTime = 0.0;
   double _autoSaveTimer = 0.0;
 
-  final Random _rng = Random();
   final CosmicAudioEngine _audio = CosmicAudioEngine();
+  final Random _rng = Random(42);
 
   final List<BgStar> _bgStars = [];
   final List<StarNode> _nodes = [];
   final List<SwarmUnit> _units = [];
+  final List<ObstacleWall> _obstacles = [];
+  final List<Wormhole> _wormholes = [];
   final List<SparkParticle> _sparks = [];
   final List<PulseWave> _waves = [];
   final List<FloatingText> _floatingTexts = [];
@@ -683,11 +990,17 @@ class _GameScreenState extends State<GameScreen>
   DateTime _lastTapTime = DateTime.fromMillisecondsSinceEpoch(0);
   StarNode? _lastTappedNode;
 
-  // Управление главным меню и сохранёнными состояниями
+  // Меню и навигация: выбор галактики -> выбор созвездия
   bool _inMenu = true;
-  late PageController _pageController;
-  int _menuPageIndex = 0;
-  double _menuPageValue = 0.0;
+  GalaxyType? _selectedGalaxy;
+  late PageController _galaxyPageController;
+  int _galaxyPageIndex = 0;
+  double _galaxyPageValue = 0.0;
+
+  late PageController _constellationPageController;
+  int _constellationPageIndex = 0;
+  double _constellationPageValue = 0.0;
+
   final Map<ConstellationType, ConstellationSaveData> _savedConstellations = {};
 
   ConstellationType _currentMapType = ConstellationType.twinSpiral;
@@ -701,11 +1014,25 @@ class _GameScreenState extends State<GameScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _pageController = PageController(viewportFraction: 0.68, initialPage: 0);
-    _pageController.addListener(() {
-      if (_pageController.hasClients && _pageController.page != null) {
+
+    _galaxyPageController =
+        PageController(viewportFraction: 0.74, initialPage: 0);
+    _galaxyPageController.addListener(() {
+      if (_galaxyPageController.hasClients &&
+          _galaxyPageController.page != null) {
         setState(() {
-          _menuPageValue = _pageController.page!;
+          _galaxyPageValue = _galaxyPageController.page!;
+        });
+      }
+    });
+
+    _constellationPageController =
+        PageController(viewportFraction: 0.68, initialPage: 0);
+    _constellationPageController.addListener(() {
+      if (_constellationPageController.hasClients &&
+          _constellationPageController.page != null) {
+        setState(() {
+          _constellationPageValue = _constellationPageController.page!;
         });
       }
     });
@@ -720,42 +1047,30 @@ class _GameScreenState extends State<GameScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _pageController.dispose();
     _ticker.dispose();
+    _galaxyPageController.dispose();
+    _constellationPageController.dispose();
     _audio.dispose();
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      _enforceFullscreen();
-    } else if (state == AppLifecycleState.paused ||
+    if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive) {
-      if (!_inMenu) {
+      if (!_inMenu && _winner == null) {
         _saveCurrentLevelSnapshot();
+        _persistStateToDisk();
       }
-      _persistStateToDisk();
     }
   }
 
-  // Находим доступный файл во внутренней памяти приложения без сторонних плагинов
   Future<File?> _getSaveFile() async {
-    final List<String> candidateDirs = [];
-    try {
-      // На Android в /proc/self/cmdline лежит package name приложения
-      final cmdlineFile = File('/proc/self/cmdline');
-      if (await cmdlineFile.exists()) {
-        final bytes = await cmdlineFile.readAsBytes();
-        final pkg = String.fromCharCodes(bytes.takeWhile((b) => b != 0)).trim();
-        if (pkg.isNotEmpty && pkg.contains('.')) {
-          candidateDirs.add('/data/user/0/$pkg/files');
-          candidateDirs.add('/data/data/$pkg/files');
-        }
-      }
-    } catch (_) {}
-
-    candidateDirs.add(Directory.systemTemp.path);
+    final candidateDirs = <String>[
+      if (Platform.isAndroid) '/data/user/0/com.sargis.auralux/files',
+      '${Platform.environment['HOME']}/.local/share/auralux_clone',
+      '/tmp/auralux_clone_data',
+    ];
 
     for (final dirPath in candidateDirs) {
       try {
@@ -763,7 +1078,7 @@ class _GameScreenState extends State<GameScreen>
         if (!await dir.exists()) {
           await dir.create(recursive: true);
         }
-        return File('${dir.path}/auralux_constellations_save_v1.json');
+        return File('${dir.path}/auralux_galaxies_save_v2.json');
       } catch (_) {}
     }
     return null;
@@ -819,7 +1134,7 @@ class _GameScreenState extends State<GameScreen>
       }
 
       final payload = jsonEncode({
-        'version': 1,
+        'version': 2,
         'levels': levelsJson,
       });
       await file.writeAsString(payload, flush: true);
@@ -837,16 +1152,25 @@ class _GameScreenState extends State<GameScreen>
         .toList();
     final rvMap = {for (final r in clonedRv) r.id: r};
 
+    final clonedWormholes =
+        _wormholes.map((w) => Wormhole.fromJson(w.toJson())).toList();
+    final whMap = {for (final w in clonedWormholes) w.id: w};
+
     final clonedUnits = _units
         .where((u) => !u.dead)
-        .map((u) => SwarmUnit.fromJson(u.toJson(), nodeMap, rvMap))
+        .map((u) => SwarmUnit.fromJson(u.toJson(), nodeMap, rvMap, whMap))
         .toList();
+
+    final clonedObstacles =
+        _obstacles.map((o) => ObstacleWall.fromJson(o.toJson())).toList();
 
     _savedConstellations[_currentMapType] = ConstellationSaveData(
       type: _currentMapType,
       nodes: clonedNodes,
       rendezvousPoints: clonedRv,
       units: clonedUnits,
+      obstacles: clonedObstacles,
+      wormholes: clonedWormholes,
       winner: _winner,
       cameraOffset: _cameraOffset,
       cameraZoom: _cameraZoom,
@@ -875,22 +1199,13 @@ class _GameScreenState extends State<GameScreen>
     setState(() {});
   }
 
-  void _restartCurrentLevel() {
-    final fresh =
-        _buildInitialConstellationData(_currentMapType, markStarted: true);
-    _savedConstellations[_currentMapType] = fresh;
-    _applySaveDataToActiveWorld(fresh);
-    _isPaused = false;
-    _persistStateToDisk();
-    setState(() {});
-  }
-
   void _returnToMenu() {
     _saveCurrentLevelSnapshot();
     _persistStateToDisk();
     _clearSelection();
     _isBoxSelecting = false;
     _inMenu = true;
+    _selectedGalaxy = galaxyForType(_currentMapType).type;
     setState(() {});
   }
 
@@ -901,72 +1216,18 @@ class _GameScreenState extends State<GameScreen>
     _waves.clear();
     _floatingTexts.clear();
     _rendezvousPoints.clear();
+    _obstacles.clear();
+    _wormholes.clear();
     _clearSelection();
-    _selectionBoxStartWorld = null;
-    _selectionBoxCurrentWorld = null;
 
-    final clonedNodes = data.nodes
-        .map((n) => StarNode.fromJson(n.toJson(), _generatePlasmaTexture()))
-        .toList();
-    final nodeMap = {for (final n in clonedNodes) n.id: n};
-
-    final clonedRv = data.rendezvousPoints
-        .map((r) => RendezvousPoint.fromJson(r.toJson()))
-        .toList();
-    final rvMap = {for (final r in clonedRv) r.id: r};
-
-    final clonedUnits = data.units
-        .where((u) => !u.dead)
-        .map((u) => SwarmUnit.fromJson(u.toJson(), nodeMap, rvMap))
-        .toList();
-
-    _nodes.addAll(clonedNodes);
-    _rendezvousPoints.addAll(clonedRv);
-    _units.addAll(clonedUnits);
-
-    int maxRvId = 0;
-    for (final r in _rendezvousPoints) {
-      if (r.id > maxRvId) maxRvId = r.id;
-    }
-    _rvIdCounter = maxRvId + 1;
-
+    _nodes.addAll(data.nodes);
+    _rendezvousPoints.addAll(data.rendezvousPoints);
+    _units.addAll(data.units);
+    _obstacles.addAll(data.obstacles);
+    _wormholes.addAll(data.wormholes.map((w) => Wormhole.fromJson(w.toJson())));
     _winner = data.winner;
     _cameraOffset = data.cameraOffset;
     _cameraZoom = data.cameraZoom;
-  }
-
-  void _initBackground() {
-    _bgStars.clear();
-    for (int i = 0; i < 280; i++) {
-      _bgStars.add(
-        BgStar(
-          Offset(
-            (_rng.nextDouble() - 0.5) * 3200,
-            (_rng.nextDouble() - 0.5) * 3200,
-          ),
-          0.15 + _rng.nextDouble() * 0.85,
-          0.7 + _rng.nextDouble() * 2.2,
-          _rng.nextDouble() * pi * 2,
-        ),
-      );
-    }
-  }
-
-  List<PlasmaCell> _generatePlasmaTexture() {
-    final cells = <PlasmaCell>[];
-    for (int i = 0; i < 16; i++) {
-      cells.add(
-        PlasmaCell(
-          radialFactor: 0.12 + _rng.nextDouble() * 0.65,
-          baseAngle: _rng.nextDouble() * pi * 2,
-          angularSpeed: (_rng.nextDouble() - 0.5) * 0.7,
-          sizeFactor: 0.22 + _rng.nextDouble() * 0.28,
-          phase: _rng.nextDouble() * pi * 2,
-          isBright: i % 2 == 0,
-        ),
-      );
-    }
-    return cells;
   }
 
   void _clearSelection() {
@@ -980,18 +1241,55 @@ class _GameScreenState extends State<GameScreen>
       _selectedRendezvous.isNotEmpty ||
       _selectedUnits.isNotEmpty;
 
+  void _initBackground() {
+    _bgStars.clear();
+    for (int i = 0; i < 280; i++) {
+      final pos = Offset(
+        (_rng.nextDouble() - 0.5) * 3600,
+        (_rng.nextDouble() - 0.5) * 2400,
+      );
+      final depth = 0.2 + _rng.nextDouble() * 0.8;
+      final size = 0.8 + _rng.nextDouble() * 2.2;
+      final phase = _rng.nextDouble() * pi * 2;
+      _bgStars.add(BgStar(pos, depth, size, phase));
+    }
+  }
+
+  List<PlasmaCell> _generatePlasmaTexture() {
+    final List<PlasmaCell> cells = [];
+    const int count = 28;
+    for (int i = 0; i < count; i++) {
+      cells.add(
+        PlasmaCell(
+          radialFactor: 0.15 + _rng.nextDouble() * 0.8,
+          baseAngle: _rng.nextDouble() * pi * 2,
+          angularSpeed:
+              (0.35 + _rng.nextDouble() * 0.85) * (_rng.nextBool() ? 1 : -1),
+          sizeFactor: 0.18 + _rng.nextDouble() * 0.28,
+          phase: _rng.nextDouble() * pi * 2,
+          isBright: _rng.nextDouble() < 0.45,
+        ),
+      );
+    }
+    return cells;
+  }
+
   ConstellationSaveData _buildInitialConstellationData(
     ConstellationType type, {
     bool markStarted = false,
   }) {
+    int idCounter = 1;
+    int wallIdCounter = 1;
+    int whIdCounter = 1;
     final List<StarNode> genNodes = [];
     final List<SwarmUnit> genUnits = [];
-    int idCounter = 0;
+    final List<ObstacleWall> genWalls = [];
+    final List<Wormhole> genWormholes = [];
 
     void spawnInitialUnits(StarNode node, Faction faction, int count) {
       for (int i = 0; i < count; i++) {
         double ang = _rng.nextDouble() * pi * 2;
-        double dist = node.radius + 14.0 + _rng.nextDouble() * 34.0;
+        double dist = node.radius + 14.0 + _rng.nextDouble() * 30.0;
         Offset pos = node.pos + Offset(cos(ang) * dist, sin(ang) * dist);
         genUnits.add(
           SwarmUnit(
@@ -1019,6 +1317,7 @@ class _GameScreenState extends State<GameScreen>
       double orbitRadius = 0.0,
       double orbitSpeed = 0.0,
       double orbitAngle = 0.0,
+      int startingUnits = 24,
     }) {
       final node = StarNode(
         id: idCounter++,
@@ -1036,11 +1335,32 @@ class _GameScreenState extends State<GameScreen>
       genNodes.add(node);
 
       if (owner != Faction.neutral) {
-        spawnInitialUnits(node, owner, 24);
+        spawnInitialUnits(node, owner, startingUnits);
       }
     }
 
+    void addWall(Offset start, Offset end, {double thickness = 16.0, Color? glow}) {
+      genWalls.add(ObstacleWall(
+        id: wallIdCounter++,
+        start: start,
+        end: end,
+        thickness: thickness,
+        glowColor: glow,
+      ));
+    }
+
+    void addWormhole(Offset pos, {double radius = 38.0, int criticalMass = 30, double poleAngle = 0.0}) {
+      genWormholes.add(Wormhole(
+        id: whIdCounter++,
+        pos: pos,
+        radius: radius,
+        criticalMass: criticalMass,
+        poleAngle: poleAngle,
+      ));
+    }
+
     switch (type) {
+      // 1. ANDROMEDA VORTEX
       case ConstellationType.twinSpiral:
         addNode(Offset.zero, Faction.neutral, level: 0, hp: 90);
         const int arms = 3;
@@ -1072,6 +1392,7 @@ class _GameScreenState extends State<GameScreen>
         }
         break;
 
+      // 2. ORION RING
       case ConstellationType.ringCluster:
         addNode(Offset.zero, Faction.neutral, level: 0, hp: 85);
         for (int i = 0; i < 6; i++) {
@@ -1105,6 +1426,7 @@ class _GameScreenState extends State<GameScreen>
         }
         break;
 
+      // 3. CYGNUS BINARY
       case ConstellationType.binaryFront:
         addNode(const Offset(0, -150), Faction.neutral, hp: 50);
         addNode(const Offset(0, 150), Faction.neutral, hp: 50);
@@ -1132,6 +1454,7 @@ class _GameScreenState extends State<GameScreen>
         }
         break;
 
+      // 4. CRUX SUPERNOVA
       case ConstellationType.supernovaCross:
         addNode(Offset.zero, Faction.neutral, hp: 100);
         for (int dir = 0; dir < 4; dir++) {
@@ -1162,6 +1485,182 @@ class _GameScreenState extends State<GameScreen>
           }
         }
         break;
+
+      // 5. LABYRINTH NEXUS (Лабиринт с защитными коридорами)
+      case ConstellationType.mazeCorridors:
+        addNode(const Offset(-500, 0), Faction.player, level: 1, startingUnits: 28);
+        addNode(const Offset(450, -260), Faction.enemy1, level: 1, startingUnits: 26);
+        addNode(const Offset(450, 260), Faction.enemy2, level: 1, startingUnits: 26);
+
+        addNode(Offset.zero, Faction.neutral, level: 0, hp: 90);
+        addNode(const Offset(-220, -180), Faction.neutral);
+        addNode(const Offset(-220, 180), Faction.neutral);
+        addNode(const Offset(160, -140), Faction.neutral);
+        addNode(const Offset(160, 140), Faction.neutral);
+        addNode(const Offset(0, -320), Faction.neutral);
+        addNode(const Offset(0, 320), Faction.neutral);
+
+        // Стены лабиринта
+        addWall(const Offset(-100, -420), const Offset(-100, -120), thickness: 18);
+        addWall(const Offset(-100, 120), const Offset(-100, 420), thickness: 18);
+        addWall(const Offset(-100, -200), const Offset(240, -200), thickness: 16);
+        addWall(const Offset(-100, 200), const Offset(240, 200), thickness: 16);
+        addWall(const Offset(240, -60), const Offset(520, 0), thickness: 16);
+        addWall(const Offset(240, 60), const Offset(520, 0), thickness: 16);
+        break;
+
+      // 6. CITADEL BARRIER (Оборонительные цитадели и стены)
+      case ConstellationType.citadelWalls:
+        addNode(const Offset(-460, -220), Faction.player, level: 1);
+        addNode(const Offset(460, -220), Faction.enemy1, level: 1);
+        addNode(const Offset(0, 340), Faction.enemy2, level: 1);
+
+        addNode(const Offset(-90, 0), Faction.neutral, hp: 80);
+        addNode(const Offset(90, 0), Faction.neutral, hp: 80);
+        addNode(const Offset(-280, 80), Faction.neutral);
+        addNode(const Offset(280, 80), Faction.neutral);
+        addNode(const Offset(0, -240), Faction.neutral);
+
+        // Шестиугольный щит вокруг центральной цитадели с тремя проходами
+        addWall(const Offset(-180, -90), const Offset(0, -190), thickness: 16);
+        addWall(const Offset(180, -90), const Offset(0, -190), thickness: 16);
+        addWall(const Offset(-220, 20), const Offset(-140, 160), thickness: 16);
+        addWall(const Offset(220, 20), const Offset(140, 160), thickness: 16);
+        addWall(const Offset(-70, 200), const Offset(70, 200), thickness: 16);
+
+        // Внешние защитные барьеры
+        addWall(const Offset(-380, -60), const Offset(-380, 180), thickness: 16);
+        addWall(const Offset(380, -60), const Offset(380, 180), thickness: 16);
+        break;
+
+      // 7. CHAMBER MATRIX (Четыре изолированные камеры)
+      case ConstellationType.chamberMatrix:
+        addNode(const Offset(-380, -260), Faction.player, level: 1);
+        addNode(const Offset(380, -260), Faction.enemy1, level: 1);
+        addNode(const Offset(380, 260), Faction.enemy2, level: 1);
+
+        // Нейтральная богатая камера (юго-запад)
+        addNode(const Offset(-380, 260), Faction.neutral, hp: 70);
+        addNode(const Offset(-240, 360), Faction.neutral, hp: 60);
+
+        // Внутренние звёзды в камерах
+        addNode(const Offset(-240, -360), Faction.neutral);
+        addNode(const Offset(240, -360), Faction.neutral);
+        addNode(const Offset(240, 360), Faction.neutral);
+
+        // Центральная площадь
+        addNode(Offset.zero, Faction.neutral, hp: 95);
+
+        // Крестообразные стены с открытыми шлюзами
+        addWall(const Offset(-580, 0), const Offset(-110, 0), thickness: 18);
+        addWall(const Offset(110, 0), const Offset(580, 0), thickness: 18);
+        addWall(const Offset(0, -450), const Offset(0, -110), thickness: 18);
+        addWall(const Offset(0, 110), const Offset(0, 450), thickness: 18);
+        break;
+
+      // 8. SINGULARITY GATE (Центральная червоточина с полярными джетами)
+      case ConstellationType.wormholeGate:
+        addWormhole(Offset.zero, radius: 42.0, criticalMass: 30, poleAngle: pi / 2);
+
+        addNode(const Offset(-500, 0), Faction.player, level: 1, startingUnits: 28);
+        addNode(const Offset(500, 0), Faction.enemy1, level: 1, startingUnits: 28);
+
+        // Звёзды на пути полярных джетов (север и юг)
+        addNode(const Offset(0, -330), Faction.neutral, hp: 85);
+        addNode(const Offset(0, 330), Faction.neutral, hp: 85);
+
+        // Фланговые вспомогательные звёзды
+        addNode(const Offset(-240, -180), Faction.neutral);
+        addNode(const Offset(-240, 180), Faction.neutral);
+        addNode(const Offset(240, -180), Faction.neutral);
+        addNode(const Offset(240, 180), Faction.neutral);
+        break;
+
+      // 9. TWIN HORIZONS (Две червоточины с перекрёстными джетами)
+      case ConstellationType.twinWormholes:
+        addWormhole(const Offset(-190, 0), radius: 36.0, criticalMass: 25, poleAngle: -pi / 4);
+        addWormhole(const Offset(190, 0), radius: 36.0, criticalMass: 25, poleAngle: pi / 4);
+
+        addNode(const Offset(0, -380), Faction.player, level: 1, startingUnits: 28);
+        addNode(const Offset(-460, 240), Faction.enemy1, level: 1, startingUnits: 26);
+        addNode(const Offset(460, 240), Faction.enemy2, level: 1, startingUnits: 26);
+
+        addNode(const Offset(0, 80), Faction.neutral, hp: 85);
+        addNode(const Offset(-320, -120), Faction.neutral);
+        addNode(const Offset(320, -120), Faction.neutral);
+        addNode(const Offset(0, 340), Faction.neutral);
+        break;
+
+      // 10. COSMIC CRUCIBLE (Гипер-сингулярность в центре)
+      case ConstellationType.singularityCrucible:
+        addWormhole(Offset.zero, radius: 48.0, criticalMass: 40, poleAngle: 0.0);
+
+        addNode(const Offset(-520, 0), Faction.player, level: 1, startingUnits: 32);
+        addNode(const Offset(260, -450), Faction.enemy1, level: 1, startingUnits: 30);
+        addNode(const Offset(260, 450), Faction.enemy2, level: 1, startingUnits: 30);
+
+        // Внутреннее кольцо звёзд вокруг сингулярности
+        for (int i = 0; i < 4; i++) {
+          double ang = (pi / 2) * i + (pi / 4);
+          addNode(
+            Offset(cos(ang) * 230.0, sin(ang) * 230.0),
+            Faction.neutral,
+            hp: 65,
+          );
+        }
+
+        // Вспомогательные фланговые звёзды
+        addNode(const Offset(-260, -280), Faction.neutral);
+        addNode(const Offset(-260, 280), Faction.neutral);
+        addNode(const Offset(420, 0), Faction.neutral);
+        break;
+
+      // 11. ASTEROID CHASM (Гибрид: лабиринт из стен вокруг червоточины)
+      case ConstellationType.labyrinthWormhole:
+        addWormhole(Offset.zero, radius: 40.0, criticalMass: 30, poleAngle: pi / 2);
+
+        addNode(const Offset(-480, 0), Faction.player, level: 1, startingUnits: 28);
+        addNode(const Offset(480, 0), Faction.enemy1, level: 1, startingUnits: 28);
+
+        addNode(const Offset(0, -320), Faction.neutral, hp: 80);
+        addNode(const Offset(0, 320), Faction.neutral, hp: 80);
+        addNode(const Offset(-240, -220), Faction.neutral);
+        addNode(const Offset(-240, 220), Faction.neutral);
+        addNode(const Offset(240, -220), Faction.neutral);
+        addNode(const Offset(240, 220), Faction.neutral);
+
+        // Лабиринтные стены, направляющие потоки к червоточине и флангам
+        addWall(const Offset(-130, -380), const Offset(-130, -90), thickness: 18);
+        addWall(const Offset(-130, 90), const Offset(-130, 380), thickness: 18);
+        addWall(const Offset(130, -380), const Offset(130, -90), thickness: 18);
+        addWall(const Offset(130, 90), const Offset(130, 380), thickness: 18);
+        break;
+
+      // 12. PULSAR OMEGA (Стартовые звёзды 3+ уровня с атомными орбитами)
+      case ConstellationType.pulsarOmega:
+        // Все стартовые базы сразу 3-го уровня с активными атомными орбитами!
+        addNode(const Offset(-460, 0), Faction.player, level: 3, hp: 100, startingUnits: 48);
+        addNode(const Offset(230, -400), Faction.enemy1, level: 3, hp: 100, startingUnits: 44);
+        addNode(const Offset(230, 400), Faction.enemy2, level: 3, hp: 100, startingUnits: 44);
+
+        // Центральная мега-звезда 3-го уровня
+        addNode(Offset.zero, Faction.neutral, level: 3, hp: 100);
+
+        // Орбитальные сателлиты 2-го уровня
+        for (int i = 0; i < 6; i++) {
+          double ang = (2 * pi / 6) * i;
+          addNode(
+            Offset(cos(ang) * 260.0, sin(ang) * 260.0),
+            Faction.neutral,
+            level: 0,
+            hp: 75,
+            orbitCenter: Offset.zero,
+            orbitRadius: 260.0,
+            orbitSpeed: 0.035,
+            orbitAngle: ang,
+          );
+        }
+        break;
     }
 
     return ConstellationSaveData(
@@ -1169,6 +1668,8 @@ class _GameScreenState extends State<GameScreen>
       nodes: genNodes,
       rendezvousPoints: [],
       units: genUnits,
+      obstacles: genWalls,
+      wormholes: genWormholes,
       winner: null,
       cameraOffset: Offset.zero,
       cameraZoom: 0.65,
@@ -1221,9 +1722,66 @@ class _GameScreenState extends State<GameScreen>
     setState(() {});
   }
 
+  // Физика столкновения частиц с препятствиями (стенами лабиринтов)
+  Offset _resolveWallCollision(
+      Offset pos, Offset vel, ObstacleWall wall, double unitRadius) {
+    final ab = wall.end - wall.start;
+    final lenSq = ab.dx * ab.dx + ab.dy * ab.dy;
+    if (lenSq < 0.0001) return pos;
+
+    final ap = pos - wall.start;
+    final t = ((ap.dx * ab.dx + ap.dy * ab.dy) / lenSq).clamp(0.0, 1.0);
+    final closest = wall.start + ab * t;
+    final diff = pos - closest;
+    final dist = diff.distance;
+    final minDist = (wall.thickness / 2.0) + unitRadius;
+
+    if (dist < minDist) {
+      Offset normal;
+      if (dist > 0.001) {
+        normal = diff / dist;
+      } else {
+        final invLen = 1.0 / sqrt(lenSq);
+        normal = Offset(-ab.dy * invLen, ab.dx * invLen);
+      }
+      return closest + normal * (minDist + 0.5);
+    }
+    return pos;
+  }
+
+  Offset _deflectVelocityByWall(
+      Offset pos, Offset vel, ObstacleWall wall, double unitRadius) {
+    final ab = wall.end - wall.start;
+    final lenSq = ab.dx * ab.dx + ab.dy * ab.dy;
+    if (lenSq < 0.0001) return vel;
+
+    final ap = pos - wall.start;
+    final t = ((ap.dx * ab.dx + ap.dy * ab.dy) / lenSq).clamp(0.0, 1.0);
+    final closest = wall.start + ab * t;
+    final diff = pos - closest;
+    final dist = diff.distance;
+    final minDist = (wall.thickness / 2.0) + unitRadius + 3.0;
+
+    if (dist < minDist) {
+      Offset normal;
+      if (dist > 0.001) {
+        normal = diff / dist;
+      } else {
+        final invLen = 1.0 / sqrt(lenSq);
+        normal = Offset(-ab.dy * invLen, ab.dx * invLen);
+      }
+      final vDotN = vel.dx * normal.dx + vel.dy * normal.dy;
+      if (vDotN < 0) {
+        return vel - normal * (vDotN * 1.3);
+      }
+    }
+    return vel;
+  }
+
   void _updateGame(double dt) {
     _globalTime += dt;
 
+    // 1. Обновление орбит и производства звёзд
     for (final node in _nodes) {
       if (node.orbitCenter != null && node.orbitRadius > 0) {
         node.orbitAngle += node.orbitSpeed * dt;
@@ -1258,9 +1816,137 @@ class _GameScreenState extends State<GameScreen>
       rp.pulse += dt * 3.0;
     }
 
+    // 2. Червоточины: вращение, пульсация и извержение полярных джетов
+    for (final wh in _wormholes) {
+      wh.spinPhase += dt * (wh.isErupting ? 5.5 : 1.5);
+      wh.pulsePhase += dt * (wh.isErupting ? 6.5 : 2.0);
+
+      if (wh.isErupting) {
+        wh.eruptionTimer -= dt;
+        wh.jetAccumulator += dt * 26.0;
+
+        Faction jetFaction = wh.lastAbsorbedFaction;
+        int maxContr = -1;
+        for (final entry in wh.factionContributions.entries) {
+          if (entry.value > maxContr) {
+            maxContr = entry.value;
+            jetFaction = entry.key;
+          }
+        }
+        if (jetFaction == Faction.neutral) jetFaction = Faction.player;
+
+        while (wh.jetAccumulator >= 1.0) {
+          wh.jetAccumulator -= 1.0;
+
+          // Спавн частиц из обоих полюсов (Северный и Южный джет)
+          for (int p = 0; p < 2; p++) {
+            final double poleBase = p == 0 ? wh.poleAngle : wh.poleAngle + pi;
+            final double spread = (_rng.nextDouble() - 0.5) * 0.24;
+            final double jetAng = poleBase + spread;
+            final Offset spawnPos = wh.pos +
+                Offset(cos(poleBase), sin(poleBase)) * (wh.radius + 12.0);
+            final Offset jetVel =
+                Offset(cos(jetAng), sin(jetAng)) * (240.0 + _rng.nextDouble() * 50.0);
+
+            _units.add(
+              SwarmUnit(
+                pos: spawnPos,
+                vel: jetVel,
+                faction: jetFaction,
+                targetNode: null,
+                targetRendezvous: null,
+                targetWormhole: null,
+                isOrbiting: false,
+                isUpgradingTarget: false,
+                orbitAngle: jetAng,
+                orbitDist: 40.0,
+                speed: 160.0 + _rng.nextDouble() * 40.0,
+                phase: _rng.nextDouble() * pi * 2,
+              ),
+            );
+            _spawnSparks(spawnPos, factionColor(jetFaction), 2, speed: 110.0);
+          }
+        }
+
+        if (wh.eruptionTimer <= 0) {
+          wh.isErupting = false;
+          wh.storedUnits = 0;
+          wh.factionContributions.clear();
+          _waves.add(
+            PulseWave(
+              pos: wh.pos,
+              color: Colors.white,
+              maxRadius: wh.radius + 70.0,
+            ),
+          );
+        }
+      }
+    }
+
+    // 3. Физика частиц
     for (final u in _units) {
       if (u.dead) continue;
 
+      // Полёт к червоточине
+      if (u.targetWormhole != null) {
+        final wh = u.targetWormhole!;
+        final toWh = wh.pos - u.pos;
+        final dist = toWh.distance;
+
+        if (dist > wh.radius * 0.75) {
+          Offset dir = toWh / dist;
+          Offset perp = Offset(-dir.dy, dir.dx);
+          double swirl = sin(_globalTime * 3.5 + u.phase) * 0.25;
+          Offset steer = (dir + perp * swirl);
+          steer = steer / steer.distance;
+          u.vel = Offset.lerp(
+            u.vel,
+            steer * (u.speed * 1.45),
+            min(1.0, dt * 6.0),
+          )!;
+          u.pos += u.vel * dt;
+        } else {
+          // Частица поглощается червоточиной
+          u.dead = true;
+          wh.storedUnits++;
+          wh.factionContributions[u.faction] =
+              (wh.factionContributions[u.faction] ?? 0) + 1;
+          wh.lastAbsorbedFaction = u.faction;
+          _spawnSparks(u.pos, factionColor(u.faction), 5, speed: 70.0);
+          _waves.add(
+            PulseWave(
+              pos: wh.pos,
+              color: factionColor(u.faction),
+              maxRadius: wh.radius + 20.0,
+            ),
+          );
+          _audio.playCapture();
+
+          // Достижение критической массы
+          if (wh.storedUnits >= wh.criticalMass && !wh.isErupting) {
+            wh.isErupting = true;
+            wh.eruptionTimer = wh.eruptionDuration;
+            _waves.add(
+              PulseWave(
+                pos: wh.pos,
+                color: const Color(0xFFE040FB),
+                maxRadius: wh.radius + 150.0,
+              ),
+            );
+            _spawnSparks(wh.pos, const Color(0xFF00E5FF), 40, speed: 200.0);
+            _floatingTexts.add(
+              FloatingText(
+                pos: wh.pos + const Offset(0, -50),
+                text: 'КРИТИЧЕСКАЯ МАССА! ДЖЕТ!',
+                color: const Color(0xFFE040FB),
+              ),
+            );
+          }
+        }
+        continue;
+      }
+
+      // Полёт к точке сбора (Рандеву)
       if (u.targetRendezvous != null) {
         final rv = u.targetRendezvous!;
         final toRv = rv.pos - u.pos;
@@ -1299,8 +1985,14 @@ class _GameScreenState extends State<GameScreen>
         continue;
       }
 
+      // Полёт к целевой звезде
       final target = u.targetNode;
-      if (target == null) continue;
+      if (target == null) {
+        // Свободный полёт в космосе (например, после извержения джета)
+        u.pos += u.vel * dt;
+        u.vel *= pow(0.85, dt).toDouble();
+        continue;
+      }
 
       final toTarget = target.pos - u.pos;
       final dist = toTarget.distance;
@@ -1380,6 +2072,17 @@ class _GameScreenState extends State<GameScreen>
               _onUnitHitNode(u, target);
             }
           }
+        }
+      }
+    }
+
+    // 4. Столкновения с препятствиями (стенами лабиринтов)
+    if (_obstacles.isNotEmpty) {
+      for (final u in _units) {
+        if (u.dead) continue;
+        for (final wall in _obstacles) {
+          u.pos = _resolveWallCollision(u.pos, u.vel, wall, 4.0);
+          u.vel = _deflectVelocityByWall(u.pos, u.vel, wall, 4.0);
         }
       }
     }
@@ -1574,6 +2277,30 @@ class _GameScreenState extends State<GameScreen>
     final myNodes = _nodes.where((n) => n.owner == aiFaction).toList();
     if (myNodes.isEmpty) return;
 
+    // Шанс отправить частицы в червоточину для вызова извержения
+    if (_wormholes.isNotEmpty && _rng.nextDouble() < 0.28) {
+      for (final wh in _wormholes) {
+        if (!wh.isErupting && wh.storedUnits < wh.criticalMass) {
+          for (final srcNode in myNodes) {
+            final available = _getOrbitingNodeUnits(srcNode, aiFaction);
+            if (available.length > 22) {
+              int sendCount = min(
+                  available.length - 10, wh.criticalMass - wh.storedUnits);
+              for (int i = 0; i < sendCount; i++) {
+                final u = available[i];
+                u.targetNode = null;
+                u.targetRendezvous = null;
+                u.targetWormhole = wh;
+                u.isOrbiting = false;
+                u.isUpgradingTarget = false;
+              }
+              break;
+            }
+          }
+        }
+      }
+    }
+
     for (final node in myNodes) {
       final nodeUnits = _getOrbitingNodeUnits(node, aiFaction);
       final alreadyInbound = _units
@@ -1664,6 +2391,7 @@ class _GameScreenState extends State<GameScreen>
       for (int i = 0; i < countToSend && i < available.length; i++) {
         available[i].targetNode = target;
         available[i].targetRendezvous = null;
+        available[i].targetWormhole = null;
         available[i].isOrbiting = false;
         available[i].isUpgradingTarget = false;
         launched++;
@@ -1709,6 +2437,7 @@ class _GameScreenState extends State<GameScreen>
 
       if (u.targetNode == target &&
           u.targetRendezvous == null &&
+          u.targetWormhole == null &&
           u.isOrbiting &&
           !u.isUpgradingTarget) {
         continue;
@@ -1716,6 +2445,7 @@ class _GameScreenState extends State<GameScreen>
 
       u.targetNode = target;
       u.targetRendezvous = null;
+      u.targetWormhole = null;
       u.isOrbiting = false;
       u.isUpgradingTarget = false;
       launched++;
@@ -1743,6 +2473,7 @@ class _GameScreenState extends State<GameScreen>
 
       u.targetNode = null;
       u.targetRendezvous = newRv;
+      u.targetWormhole = null;
       u.isOrbiting = false;
       u.isUpgradingTarget = false;
       launched++;
@@ -1755,6 +2486,33 @@ class _GameScreenState extends State<GameScreen>
           pos: newRv.pos,
           color: factionColor(Faction.player),
           maxRadius: 48,
+        ),
+      );
+      _audio.playLaunch();
+    }
+    return launched;
+  }
+
+  int _dispatchSelectedToWormhole(Wormhole target) {
+    int launched = 0;
+
+    for (final u in _units) {
+      if (!_isUnitPartOfCurrentSelection(u)) continue;
+
+      u.targetNode = null;
+      u.targetRendezvous = null;
+      u.targetWormhole = target;
+      u.isOrbiting = false;
+      u.isUpgradingTarget = false;
+      launched++;
+    }
+
+    if (launched > 0) {
+      _waves.add(
+        PulseWave(
+          pos: target.pos,
+          color: const Color(0xFFE040FB),
+          maxRadius: target.radius + 42,
         ),
       );
       _audio.playLaunch();
@@ -1801,6 +2559,7 @@ class _GameScreenState extends State<GameScreen>
       final u = availableUnits[i];
       u.targetNode = node;
       u.targetRendezvous = null;
+      u.targetWormhole = null;
       u.isOrbiting = false;
       u.isUpgradingTarget = true;
     }
@@ -1845,6 +2604,19 @@ class _GameScreenState extends State<GameScreen>
       if (d <= 42.0 && d < bestDist) {
         bestDist = d;
         closest = rp;
+      }
+    }
+    return closest;
+  }
+
+  Wormhole? _findWormholeAtWorld(Offset worldPos) {
+    Wormhole? closest;
+    double bestDist = double.infinity;
+    for (final wh in _wormholes) {
+      double d = (wh.pos - worldPos).distance;
+      if (d <= wh.radius + 24.0 && d < bestDist) {
+        bestDist = d;
+        closest = wh;
       }
     }
     return closest;
@@ -1934,8 +2706,6 @@ class _GameScreenState extends State<GameScreen>
       return;
     }
 
-    if (_gestureWasMultitouch || event.pointer != _primaryPointerId) return;
-
     if (_pointerDownScreenPos != null &&
         (event.localPosition - _pointerDownScreenPos!).distance > 18.0) {
       _isBoxSelecting = true;
@@ -1990,7 +2760,34 @@ class _GameScreenState extends State<GameScreen>
   void _handleSingleOrDoubleTap(Offset worldPos) {
     final hitNode = _findNodeAtWorld(worldPos);
     final hitRv = _findRendezvousAtWorld(worldPos);
+    final hitWormhole = _findWormholeAtWorld(worldPos);
     final now = DateTime.now();
+
+    if (hitWormhole != null) {
+      if (_hasAnySelection) {
+        _dispatchSelectedToWormhole(hitWormhole);
+        HapticFeedback.mediumImpact();
+        _clearSelection();
+      } else {
+        _floatingTexts.add(
+          FloatingText(
+            pos: hitWormhole.pos + Offset(0, -hitWormhole.radius - 18),
+            text: 'ЧЕРВОТОЧИНА [${hitWormhole.storedUnits}/${hitWormhole.criticalMass}]',
+            color: const Color(0xFFE040FB),
+          ),
+        );
+        _waves.add(
+          PulseWave(
+            pos: hitWormhole.pos,
+            color: const Color(0xFFE040FB),
+            maxRadius: hitWormhole.radius + 32,
+          ),
+        );
+        HapticFeedback.selectionClick();
+      }
+      _lastTappedNode = null;
+      return;
+    }
 
     if (hitNode != null) {
       final bool isDoubleTapOnOwnNode = hitNode.owner == Faction.player &&
@@ -2070,6 +2867,9 @@ class _GameScreenState extends State<GameScreen>
   int _countFactionUnits(Faction f) =>
       _units.where((u) => !u.dead && u.faction == f).length;
 
+  int _countFactionNodes(Faction f) =>
+      _nodes.where((n) => n.owner == f).length;
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -2079,6 +2879,9 @@ class _GameScreenState extends State<GameScreen>
               Size(constraints.maxWidth, constraints.maxHeight);
 
           if (_inMenu) {
+            if (_selectedGalaxy == null) {
+              return _buildGalaxyMenu(viewportSize);
+            }
             return _buildConstellationMenu(viewportSize);
           }
           return _buildActiveGameStack(viewportSize);
@@ -2087,8 +2890,8 @@ class _GameScreenState extends State<GameScreen>
     );
   }
 
-  // ГЛАВНОЕ МЕНЮ С КАРУСЕЛЬЮ СОЗВЕЗДИЙ И АКТУАЛЬНЫМИ ПРЕВЬЮ
-  Widget _buildConstellationMenu(Size viewportSize) {
+  // 1. СТАРТОВАЯ СТРАНИЦА: ВЫБОР ГАЛАКТИКИ
+  Widget _buildGalaxyMenu(Size viewportSize) {
     return Stack(
       children: [
         CustomPaint(
@@ -2096,7 +2899,7 @@ class _GameScreenState extends State<GameScreen>
           painter: MenuBackgroundPainter(
             globalTime: _globalTime,
             bgStars: _bgStars,
-            pageOffset: _menuPageValue,
+            pageOffset: _galaxyPageValue,
           ),
         ),
         SafeArea(
@@ -2112,7 +2915,7 @@ class _GameScreenState extends State<GameScreen>
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'AURALUX: CONSTELLATIONS',
+                          'AURALUX: GALAXY ATLAS',
                           style: TextStyle(
                             color: Colors.white,
                             fontSize: 18,
@@ -2122,7 +2925,7 @@ class _GameScreenState extends State<GameScreen>
                         ),
                         SizedBox(height: 2),
                         Text(
-                          'СВАЙПАЙТЕ ВЛЕВО/ВПРАВО  •  НАЖМИТЕ НА СОЗВЕЗДИЕ ДЛЯ ИГРЫ',
+                          'ВЫБЕРИТЕ ГАЛАКТИКУ ДЛЯ ИССЛЕДОВАНИЯ СОЗВЕЗДИЙ',
                           style: TextStyle(
                             color: Colors.white54,
                             fontSize: 10,
@@ -2144,19 +2947,365 @@ class _GameScreenState extends State<GameScreen>
               ),
               Expanded(
                 child: PageView.builder(
-                  controller: _pageController,
-                  itemCount: ConstellationType.values.length,
+                  controller: _galaxyPageController,
+                  itemCount: galaxies.length,
                   onPageChanged: (idx) {
                     HapticFeedback.selectionClick();
-                    setState(() => _menuPageIndex = idx);
+                    setState(() => _galaxyPageIndex = idx);
                   },
                   itemBuilder: (context, index) {
-                    final type = ConstellationType.values[index];
+                    final galaxy = galaxies[index];
+                    final double delta = (_galaxyPageValue - index).abs();
+                    final double scale = (1.0 - delta * 0.12).clamp(0.85, 1.0);
+                    final double opacity =
+                        (1.0 - delta * 0.45).clamp(0.45, 1.0);
+
+                    return Transform.scale(
+                      scale: scale,
+                      child: Opacity(
+                        opacity: opacity,
+                        child: _buildGalaxyCard(galaxy),
+                      ),
+                    );
+                  },
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.only(bottom: 12, top: 4),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: List.generate(
+                    galaxies.length,
+                    (i) {
+                      final active = i == _galaxyPageIndex;
+                      return AnimatedContainer(
+                        duration: const Duration(milliseconds: 220),
+                        margin: const EdgeInsets.symmetric(horizontal: 5),
+                        width: active ? 24 : 8,
+                        height: 6,
+                        decoration: BoxDecoration(
+                          color: active
+                              ? galaxies[i].primaryColor
+                              : Colors.white.withValues(alpha: 0.22),
+                          borderRadius: BorderRadius.circular(3),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildGalaxyCard(GalaxyDefinition galaxy) {
+    int capturedCount = 0;
+    for (final cType in galaxy.constellations) {
+      if (_savedConstellations[cType]?.winner == Faction.player) {
+        capturedCount++;
+      }
+    }
+
+    return GestureDetector(
+      onTap: () {
+        HapticFeedback.mediumImpact();
+        setState(() {
+          _selectedGalaxy = galaxy.type;
+          _constellationPageIndex = 0;
+          _constellationPageValue = 0.0;
+          if (_constellationPageController.hasClients) {
+            _constellationPageController.jumpToPage(0);
+          }
+        });
+      },
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        decoration: BoxDecoration(
+          color: const Color(0xFF070D20).withValues(alpha: 0.85),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: galaxy.primaryColor.withValues(alpha: 0.45),
+            width: 1.6,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: galaxy.primaryColor.withValues(alpha: 0.12),
+              blurRadius: 28,
+              spreadRadius: 2,
+            ),
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(20),
+          child: Stack(
+            children: [
+              // Анимированная галактическая спираль на фоне карточки
+              Positioned.fill(
+                child: CustomPaint(
+                  painter: GalaxySpiralPainter(
+                    primaryColor: galaxy.primaryColor,
+                    globalTime: _globalTime,
+                  ),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.all(22.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: galaxy.primaryColor.withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(
+                              color: galaxy.primaryColor.withValues(alpha: 0.5),
+                              width: 1.0,
+                            ),
+                          ),
+                          child: Icon(
+                            galaxy.icon,
+                            color: galaxy.primaryColor,
+                            size: 26,
+                          ),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 5),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.08),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(
+                                color: Colors.white24, width: 0.9),
+                          ),
+                          child: Text(
+                            '$capturedCount / ${galaxy.constellations.length} ЗАХВАЧЕНО',
+                            style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 10.5,
+                              letterSpacing: 1.2,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          galaxy.title,
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 20,
+                            letterSpacing: 3.5,
+                            fontWeight: FontWeight.bold,
+                            shadows: [
+                              Shadow(
+                                color: galaxy.primaryColor.withValues(alpha: 0.6),
+                                blurRadius: 12,
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 5),
+                        Text(
+                          galaxy.subtitle,
+                          style: TextStyle(
+                            color: galaxy.primaryColor,
+                            fontSize: 12,
+                            letterSpacing: 1.2,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          galaxy.description,
+                          style: const TextStyle(
+                            color: Colors.white60,
+                            fontSize: 11.5,
+                            height: 1.35,
+                          ),
+                        ),
+                      ],
+                    ),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          '${galaxy.constellations.length} СОЗВЕЗДИЯ',
+                          style: const TextStyle(
+                            color: Colors.white54,
+                            fontSize: 11,
+                            letterSpacing: 1.5,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: galaxy.primaryColor.withValues(alpha: 0.25),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                              color: galaxy.primaryColor,
+                              width: 1.2,
+                            ),
+                          ),
+                          child: const Row(
+                            children: [
+                              Text(
+                                'ВОЙТИ В ГАЛАКТИКУ',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                  letterSpacing: 1.4,
+                                ),
+                              ),
+                              SizedBox(width: 6),
+                              Icon(Icons.arrow_forward_ios,
+                                  size: 11, color: Colors.white),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // 2. ВНУТРЕННИЙ ЭКРАН: ВЫБОР СОЗВЕЗДИЯ В ТЕКУЩЕЙ ГАЛАКТИКЕ
+  Widget _buildConstellationMenu(Size viewportSize) {
+    final currentGalaxy = galaxies.firstWhere(
+      (g) => g.type == _selectedGalaxy,
+      orElse: () => galaxies[0],
+    );
+    final constellationList = currentGalaxy.constellations;
+
+    return Stack(
+      children: [
+        CustomPaint(
+          size: viewportSize,
+          painter: MenuBackgroundPainter(
+            globalTime: _globalTime,
+            bgStars: _bgStars,
+            pageOffset: _constellationPageValue,
+          ),
+        ),
+        SafeArea(
+          child: Column(
+            children: [
+              Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Row(
+                      children: [
+                        InkWell(
+                          onTap: () {
+                            HapticFeedback.lightImpact();
+                            setState(() {
+                              _selectedGalaxy = null;
+                            });
+                          },
+                          borderRadius: BorderRadius.circular(10),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 7),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: 0.08),
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(
+                                  color: Colors.white24, width: 1.0),
+                            ),
+                            child: const Row(
+                              children: [
+                                Icon(Icons.arrow_back_ios,
+                                    size: 13, color: Colors.white),
+                                SizedBox(width: 4),
+                                Text(
+                                  'ГАЛАКТИКИ',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 11,
+                                    letterSpacing: 1.2,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              currentGalaxy.title,
+                              style: TextStyle(
+                                color: currentGalaxy.primaryColor,
+                                fontSize: 16,
+                                letterSpacing: 3.5,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            const Text(
+                              'ВЫБЕРИТЕ СОЗВЕЗДИЕ ДЛЯ СРАЖЕНИЯ',
+                              style: TextStyle(
+                                color: Colors.white54,
+                                fontSize: 9.5,
+                                letterSpacing: 1.2,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                    _buildTopButton(
+                      icon:
+                          _audio.isMuted ? Icons.volume_off : Icons.volume_up,
+                      onTap: () async {
+                        await _audio.toggleMute();
+                        setState(() {});
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: PageView.builder(
+                  controller: _constellationPageController,
+                  itemCount: constellationList.length,
+                  onPageChanged: (idx) {
+                    HapticFeedback.selectionClick();
+                    setState(() => _constellationPageIndex = idx);
+                  },
+                  itemBuilder: (context, index) {
+                    final type = constellationList[index];
                     final saveData = _savedConstellations[type] ??
                         _buildInitialConstellationData(type);
 
-                    final double delta = (_menuPageValue - index).abs();
-                    final double scale = (1.0 - delta * 0.14).clamp(0.84, 1.0);
+                    final double delta =
+                        (_constellationPageValue - index).abs();
+                    final double scale =
+                        (1.0 - delta * 0.14).clamp(0.84, 1.0);
                     final double opacity =
                         (1.0 - delta * 0.45).clamp(0.45, 1.0);
 
@@ -2175,9 +3324,9 @@ class _GameScreenState extends State<GameScreen>
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: List.generate(
-                    ConstellationType.values.length,
+                    constellationList.length,
                     (i) {
-                      final active = i == _menuPageIndex;
+                      final active = i == _constellationPageIndex;
                       return AnimatedContainer(
                         duration: const Duration(milliseconds: 220),
                         margin: const EdgeInsets.symmetric(horizontal: 5),
@@ -2185,7 +3334,7 @@ class _GameScreenState extends State<GameScreen>
                         height: 6,
                         decoration: BoxDecoration(
                           color: active
-                              ? const Color(0xFF00E5FF)
+                              ? currentGalaxy.primaryColor
                               : Colors.white.withValues(alpha: 0.22),
                           borderRadius: BorderRadius.circular(3),
                         ),
@@ -2250,7 +3399,6 @@ class _GameScreenState extends State<GameScreen>
           borderRadius: BorderRadius.circular(18),
           child: Stack(
             children: [
-              // Живое превью звёзд созвездия (показывает актуальное сохранённое состояние)
               Positioned.fill(
                 child: CustomPaint(
                   painter: ConstellationPreviewPainter(
@@ -2259,7 +3407,6 @@ class _GameScreenState extends State<GameScreen>
                   ),
                 ),
               ),
-              // Верхняя информационная плашка карточки
               Positioned(
                 top: 14,
                 left: 18,
@@ -2313,7 +3460,6 @@ class _GameScreenState extends State<GameScreen>
                   ],
                 ),
               ),
-              // Нижняя панель карточки с балансом звёзд и кнопками «Играть / Заново»
               Positioned(
                 bottom: 12,
                 left: 18,
@@ -2335,7 +3481,7 @@ class _GameScreenState extends State<GameScreen>
                     Row(
                       children: [
                         if (hasSavedGame)
-                           Padding(
+                          Padding(
                             padding: const EdgeInsets.only(right: 10),
                             child: InkWell(
                               onTap: () {
@@ -2380,24 +3526,22 @@ class _GameScreenState extends State<GameScreen>
                                 .withValues(alpha: 0.22),
                             borderRadius: BorderRadius.circular(8),
                             border: Border.all(
-                                color: const Color(0xFF00E5FF), width: 1.1),
+                                color: const Color(0xFF00E5FF), width: 1.2),
                           ),
                           child: Row(
                             children: [
-                              const Icon(Icons.play_arrow,
-                                  size: 15, color: Colors.white),
-                              const SizedBox(width: 4),
                               Text(
-                                hasSavedGame && winner == null
-                                    ? 'ПРОДОЛЖИТЬ'
-                                    : 'ИГРАТЬ',
+                                hasSavedGame ? 'ПРОДОЛЖИТЬ' : 'ИГРАТЬ',
                                 style: const TextStyle(
                                   color: Colors.white,
                                   fontSize: 11,
-                                  letterSpacing: 1.5,
-                                  fontWeight: FontWeight.w700,
+                                  fontWeight: FontWeight.bold,
+                                  letterSpacing: 1.4,
                                 ),
                               ),
+                              const SizedBox(width: 5),
+                              const Icon(Icons.play_arrow,
+                                  size: 15, color: Colors.white),
                             ],
                           ),
                         ),
@@ -2414,38 +3558,64 @@ class _GameScreenState extends State<GameScreen>
   }
 
   Widget _buildStarBadge(Color color, int count) {
-    return Row(
-      children: [
-        Container(
-          width: 9,
-          height: 9,
-          decoration: BoxDecoration(
-            color: color,
-            shape: BoxShape.circle,
-            boxShadow: [
-              BoxShadow(color: color.withValues(alpha: 0.7), blurRadius: 5),
-            ],
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.16),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withValues(alpha: 0.5), width: 0.8),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 7,
+            height: 7,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
           ),
-        ),
-        const SizedBox(width: 4),
-        Text(
-          '$count',
-          style: const TextStyle(
-            color: Colors.white70,
-            fontSize: 11,
-            fontWeight: FontWeight.w600,
+          const SizedBox(width: 5),
+          Text(
+            count.toString(),
+            style: TextStyle(
+              color: color,
+              fontSize: 11,
+              fontWeight: FontWeight.bold,
+            ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 
-  // ЭКРАН АКТИВНОЙ ИГРЫ
+  Widget _buildTopButton({
+    required IconData icon,
+    required VoidCallback onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(10),
+      child: Container(
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: Colors.white24, width: 0.9),
+        ),
+        child: Icon(icon, color: Colors.white70, size: 20),
+      ),
+    );
+  }
+
+  // 3. ЭКРАН САМОЙ ИГРЫ С HUD И ПАНЕЛЬЮ УПРАВЛЕНИЯ
   Widget _buildActiveGameStack(Size viewportSize) {
-    final playerUnits = _countFactionUnits(Faction.player);
-    final enemy1Units = _countFactionUnits(Faction.enemy1);
-    final enemy2Units = _countFactionUnits(Faction.enemy2);
-    final totalUnits = max(1, playerUnits + enemy1Units + enemy2Units);
+    final int pUnits = _countFactionUnits(Faction.player);
+    final int e1Units = _countFactionUnits(Faction.enemy1);
+    final int e2Units = _countFactionUnits(Faction.enemy2);
+
+    final int pNodes = _countFactionNodes(Faction.player);
+    final int e1Nodes = _countFactionNodes(Faction.enemy1);
+    final int e2Nodes = _countFactionNodes(Faction.enemy2);
+    final int nNodes = _countFactionNodes(Faction.neutral);
 
     Rect? selectionWorldRect;
     if (_isBoxSelecting &&
@@ -2481,6 +3651,8 @@ class _GameScreenState extends State<GameScreen>
               bgStars: _bgStars,
               nodes: _nodes,
               units: _units,
+              obstacles: _obstacles,
+              wormholes: _wormholes,
               sparks: _sparks,
               waves: _waves,
               floatingTexts: _floatingTexts,
@@ -2496,236 +3668,261 @@ class _GameScreenState extends State<GameScreen>
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
             child: Column(
-              children: [
-                Row(
-                  children: [
-                    _buildTopButton(
-                      icon: Icons.grid_view_rounded,
-                      label: 'СОЗВЕЗДИЯ',
-                      onTap: _returnToMenu,
-                    ),
-                    const SizedBox(width: 12),
-                    Text(
-                      _mapName,
-                      style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 12,
-                        letterSpacing: 2.2,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(4),
-                        child: SizedBox(
-                          height: 6,
-                          child: Row(
-                            children: [
-                              Expanded(
-                                flex:
-                                    max(1, (playerUnits * 100 ~/ totalUnits)),
-                                child: Container(
-                                    color: factionColor(Faction.player)),
-                              ),
-                              Expanded(
-                                flex:
-                                    max(1, (enemy1Units * 100 ~/ totalUnits)),
-                                child: Container(
-                                    color: factionColor(Faction.enemy1)),
-                              ),
-                              Expanded(
-                                flex:
-                                    max(1, (enemy2Units * 100 ~/ totalUnits)),
-                                child: Container(
-                                    color: factionColor(Faction.enemy2)),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    _buildTopButton(
-                      icon: _audio.isMuted
-                          ? Icons.volume_off
-                          : Icons.volume_up,
-                      onTap: () async {
-                        await _audio.toggleMute();
-                        setState(() {});
-                      },
-                    ),
-                    const SizedBox(width: 8),
-                    _buildTopButton(
-                      label: '${_gameSpeed.toStringAsFixed(0)}x',
-                      onTap: () {
-                        setState(() {
-                          _gameSpeed = _gameSpeed == 1.0
-                              ? 2.0
-                              : (_gameSpeed == 2.0 ? 3.0 : 1.0);
-                        });
-                      },
-                    ),
-                    const SizedBox(width: 8),
-                    _buildTopButton(
-                      icon: _isPaused ? Icons.play_arrow : Icons.pause,
-                      onTap: () {
-                        setState(() => _isPaused = !_isPaused);
-                        _saveCurrentLevelSnapshot();
-                        _persistStateToDisk();
-                      },
-                    ),
-                    const SizedBox(width: 8),
-                    _buildTopButton(
-                      icon: Icons.refresh,
-                      label: 'ЗАНОВО',
-                      onTap: _restartCurrentLevel,
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ),
-        Positioned(
-          bottom: 14,
-          left: 16,
-          right: 16,
-          child: IgnorePointer(
-            child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text(
-                  'СИНИЕ: $playerUnits   |   КРАСНЫЕ: $enemy1Units   |   ЗЕЛЕНЫЕ: $enemy2Units',
-                  style: const TextStyle(
-                    color: Colors.white54,
-                    fontSize: 11,
-                    letterSpacing: 1.4,
-                  ),
-                ),
-                const Text(
-                  'РАМКА: ВЫДЕЛИТЬ  •  ТАП В КОСМОС/ЗВЕЗДУ: ОТПРАВИТЬ  •  2x ТАП: ВТЯНУТЬ В РОСТ',
-                  style: TextStyle(
-                    color: Colors.white54,
-                    fontSize: 10,
-                    letterSpacing: 1.0,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-        if (_winner != null)
-          Container(
-            color: Colors.black54,
-            child: Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    _winner == Faction.player
-                        ? 'СОЗВЕЗДИЕ ЗАХВАЧЕНО'
-                        : 'СОЗВЕЗДИЕ ПОТЕРЯНО',
-                    style: TextStyle(
-                      color: factionColor(_winner!),
-                      fontSize: 28,
-                      letterSpacing: 5,
-                      fontWeight: FontWeight.w300,
-                      shadows: [
-                        Shadow(
-                          color: factionColor(_winner!),
-                          blurRadius: 24,
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Row(
+                      children: [
+                        _buildTopButton(
+                          icon: Icons.arrow_back,
+                          onTap: _returnToMenu,
+                        ),
+                        const SizedBox(width: 12),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              _mapName,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 13,
+                                letterSpacing: 2.5,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const Text(
+                              'ТАП ПО ЗВЕЗДЕ/ЧЕРВОТОЧИНЕ — ОТПРАВИТЬ • ДВОЙНОЙ ТАП — УЛУЧШИТЬ',
+                              style: TextStyle(
+                                color: Colors.white38,
+                                fontSize: 8.5,
+                                letterSpacing: 1.0,
+                              ),
+                            ),
+                          ],
                         ),
                       ],
                     ),
-                  ),
-                  const SizedBox(height: 24),
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      OutlinedButton(
-                        style: OutlinedButton.styleFrom(
-                          side: const BorderSide(color: Colors.white54),
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 24,
-                            vertical: 14,
-                          ),
+                    Row(
+                      children: [
+                        _buildTopStatChip(Faction.player, pNodes, pUnits),
+                        const SizedBox(width: 8),
+                        _buildTopStatChip(Faction.enemy1, e1Nodes, e1Units),
+                        const SizedBox(width: 8),
+                        _buildTopStatChip(Faction.enemy2, e2Nodes, e2Units),
+                        const SizedBox(width: 8),
+                        _buildTopStatChip(Faction.neutral, nNodes, 0),
+                      ],
+                    ),
+                    Row(
+                      children: [
+                        _buildTopButton(
+                          icon: _gameSpeed == 1.0
+                              ? Icons.play_arrow
+                              : Icons.fast_forward,
+                          onTap: () {
+                            setState(() {
+                              if (_gameSpeed == 1.0) {
+                                _gameSpeed = 2.0;
+                              } else if (_gameSpeed == 2.0) {
+                                _gameSpeed = 3.0;
+                              } else {
+                                _gameSpeed = 1.0;
+                              }
+                            });
+                          },
                         ),
-                        onPressed: _restartCurrentLevel,
-                        child: const Text(
-                          'ИГРАТЬ ЗАНОВО',
-                          style: TextStyle(
-                            color: Colors.white,
-                            letterSpacing: 2.0,
-                          ),
+                        const SizedBox(width: 8),
+                        _buildTopButton(
+                          icon: _isPaused ? Icons.play_arrow : Icons.pause,
+                          onTap: () {
+                            setState(() => _isPaused = !_isPaused);
+                          },
                         ),
+                        const SizedBox(width: 8),
+                        _buildTopButton(
+                          icon: _audio.isMuted
+                              ? Icons.volume_off
+                              : Icons.volume_up,
+                          onTap: () async {
+                            await _audio.toggleMute();
+                            setState(() {});
+                          },
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+                if (_winner != null)
+                  Center(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 32, vertical: 20),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF070E24).withValues(alpha: 0.95),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                          color: _winner == Faction.player
+                              ? const Color(0xFF00E5FF)
+                              : const Color(0xFFFF1744),
+                          width: 2.0,
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: (_winner == Faction.player
+                                    ? const Color(0xFF00E5FF)
+                                    : const Color(0xFFFF1744))
+                                .withValues(alpha: 0.35),
+                            blurRadius: 36,
+                          ),
+                        ],
                       ),
-                      const SizedBox(width: 16),
-                      OutlinedButton(
-                        style: OutlinedButton.styleFrom(
-                          side: BorderSide(color: factionColor(_winner!)),
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 28,
-                            vertical: 14,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            _winner == Faction.player
+                                ? 'СОЗВЕЗДИЕ ЗАХВАЧЕНО!'
+                                : 'ПОРАЖЕНИЕ В БИТВЕ',
+                            style: TextStyle(
+                              color: _winner == Faction.player
+                                  ? const Color(0xFF00E5FF)
+                                  : const Color(0xFFFF1744),
+                              fontSize: 22,
+                              fontWeight: FontWeight.bold,
+                              letterSpacing: 3.5,
+                            ),
                           ),
-                        ),
-                        onPressed: _returnToMenu,
-                        child: const Text(
-                          'К СОЗВЕЗДИЯМ',
-                          style: TextStyle(
-                            color: Colors.white,
-                            letterSpacing: 2.5,
+                          const SizedBox(height: 16),
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              ElevatedButton(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: const Color(0xFF00E5FF),
+                                  foregroundColor: Colors.black,
+                                ),
+                                onPressed: () {
+                                  _openConstellationFromMenu(_currentMapType,
+                                      forceRestart: true);
+                                },
+                                child: const Text('ЗАНОВО'),
+                              ),
+                              const SizedBox(width: 14),
+                              OutlinedButton(
+                                onPressed: _returnToMenu,
+                                child: const Text('К СОЗВЕЗДИЯМ'),
+                              ),
+                            ],
                           ),
-                        ),
+                        ],
                       ),
-                    ],
-                  ),
-                ],
-              ),
+                    ),
+                  )
+                else
+                  const SizedBox.shrink(),
+              ],
             ),
           ),
+        ),
       ],
     );
   }
 
-  Widget _buildTopButton({
-    IconData? icon,
-    String? label,
-    required VoidCallback onTap,
-  }) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(6),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-        decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: 0.06),
-          borderRadius: BorderRadius.circular(6),
-          border: Border.all(color: Colors.white24, width: 0.8),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (icon != null) Icon(icon, size: 15, color: Colors.white70),
-            if (icon != null && label != null) const SizedBox(width: 5),
-            if (label != null)
-              Text(
-                label,
-                style: const TextStyle(
-                  color: Colors.white70,
-                  fontSize: 11,
-                  letterSpacing: 1.2,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-          ],
-        ),
+  Widget _buildTopStatChip(Faction f, int nodes, int units) {
+    final c = factionColor(f);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: c.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: c.withValues(alpha: 0.45), width: 0.8),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 7,
+            height: 7,
+            decoration: BoxDecoration(color: c, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 5),
+          Text(
+            f == Faction.neutral ? '$nodes' : '$nodes ($units)',
+            style: TextStyle(
+              color: c,
+              fontSize: 10.5,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ],
       ),
     );
   }
 }
 
-// ФОН ГЛАВНОГО МЕНЮ
+// ПРЕВЬЮ-СПИРАЛЬ ГАЛАКТИКИ В МЕНЮ
+class GalaxySpiralPainter extends CustomPainter {
+  final Color primaryColor;
+  final double globalTime;
+
+  GalaxySpiralPainter({
+    required this.primaryColor,
+    required this.globalTime,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width * 0.78, size.height * 0.52);
+
+    final glowPaint = Paint()
+      ..color = primaryColor.withValues(alpha: 0.18)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 45.0)
+      ..blendMode = BlendMode.plus;
+    canvas.drawCircle(center, 90.0, glowPaint);
+
+    canvas.save();
+    canvas.translate(center.dx, center.dy);
+    canvas.rotate(globalTime * 0.15);
+
+    const int arms = 2;
+    for (int a = 0; a < arms; a++) {
+      final double armOffset = (pi * 2 / arms) * a;
+      final armPath = Path();
+      for (int i = 0; i <= 60; i++) {
+        final double t = i / 60.0;
+        final double ang = armOffset + t * 4.2;
+        final double r = 8.0 + t * 110.0;
+        final pt = Offset(cos(ang) * r, sin(ang) * r);
+        if (i == 0) {
+          armPath.moveTo(pt.dx, pt.dy);
+        } else {
+          armPath.lineTo(pt.dx, pt.dy);
+        }
+      }
+      final armPaint = Paint()
+        ..color = primaryColor.withValues(alpha: 0.35)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3.2
+        ..blendMode = BlendMode.plus
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4.0);
+      canvas.drawPath(armPath, armPaint);
+    }
+
+    final corePaint = Paint()
+      ..color = Colors.white.withValues(alpha: 0.9)
+      ..blendMode = BlendMode.plus
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8.0);
+    canvas.drawCircle(Offset.zero, 14.0, corePaint);
+
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(covariant GalaxySpiralPainter oldDelegate) => true;
+}
+
 class MenuBackgroundPainter extends CustomPainter {
   final double globalTime;
   final List<BgStar> bgStars;
@@ -2739,14 +3936,13 @@ class MenuBackgroundPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final center = Offset(size.width / 2, size.height / 2);
     final bgPaint = Paint()
       ..shader = ui.Gradient.radial(
-        center + Offset(-pageOffset * 60.0, 0),
+        Offset(size.width / 2, size.height / 2),
         max(size.width, size.height) * 0.9,
         [
-          const Color(0xFF0B1536),
-          const Color(0xFF040712),
+          const Color(0xFF091024),
+          const Color(0xFF030611),
           const Color(0xFF010206),
         ],
         [0.0, 0.55, 1.0],
@@ -2755,14 +3951,15 @@ class MenuBackgroundPainter extends CustomPainter {
 
     final starPaint = Paint()..style = PaintingStyle.fill;
     for (final s in bgStars) {
-      final parallax = Offset(-pageOffset * 120.0 * s.depth, 0);
-      final pos = center + parallax + s.pos * 0.35;
-      final dx = (pos.dx % size.width + size.width) % size.width;
-      final dy = (pos.dy % size.height + size.height) % size.height;
+      final dx =
+          ((s.pos.dx - pageOffset * 90 * s.depth) % size.width + size.width) %
+              size.width;
+      final dy = (s.pos.dy % size.height + size.height) % size.height;
       final twinkle =
           0.35 + 0.65 * (0.5 + 0.5 * sin(globalTime * 1.8 + s.phase));
-      starPaint.color = Colors.white.withValues(alpha: twinkle * 0.6 * s.depth);
-      canvas.drawCircle(Offset(dx, dy), s.size * 0.85, starPaint);
+      starPaint.color =
+          Colors.white.withValues(alpha: twinkle * 0.65 * s.depth);
+      canvas.drawCircle(Offset(dx, dy), s.size, starPaint);
     }
   }
 
@@ -2789,6 +3986,16 @@ class ConstellationPreviewPainter extends CustomPainter {
       final d = n.pos.distance + n.radius + 40.0;
       if (d > maxExtent) maxExtent = d;
     }
+    for (final wh in saveData.wormholes) {
+      final d = wh.pos.distance + wh.radius + 50.0;
+      if (d > maxExtent) maxExtent = d;
+    }
+    for (final w in saveData.obstacles) {
+      final d1 = w.start.distance + 30.0;
+      final d2 = w.end.distance + 30.0;
+      if (d1 > maxExtent) maxExtent = d1;
+      if (d2 > maxExtent) maxExtent = d2;
+    }
 
     final double fitScale =
         (min(size.width * 0.72, size.height * 0.64) / 2) / maxExtent;
@@ -2797,7 +4004,55 @@ class ConstellationPreviewPainter extends CustomPainter {
     canvas.translate(center.dx, center.dy);
     canvas.scale(fitScale);
 
-    // Орбиты
+    // 1. Стены лабиринтов в превью
+    for (final wall in saveData.obstacles) {
+      final wallColor = wall.glowColor ?? const Color(0xFF00E5FF);
+      final wallPaint = Paint()
+        ..color = wallColor.withValues(alpha: 0.65)
+        ..strokeWidth = wall.thickness * 0.8
+        ..strokeCap = StrokeCap.round
+        ..blendMode = BlendMode.plus;
+      canvas.drawLine(wall.start, wall.end, wallPaint);
+
+      final corePaint = Paint()
+        ..color = Colors.white.withValues(alpha: 0.8)
+        ..strokeWidth = 1.8 / fitScale
+        ..strokeCap = StrokeCap.round;
+      canvas.drawLine(wall.start, wall.end, corePaint);
+    }
+
+    // 2. Червоточины в превью
+    for (final wh in saveData.wormholes) {
+      final whGlow = Paint()
+        ..color = const Color(0xFFE040FB).withValues(alpha: 0.55)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 12.0)
+        ..blendMode = BlendMode.plus;
+      canvas.drawCircle(wh.pos, wh.radius * 1.6, whGlow);
+
+      final whRing = Paint()
+        ..color = const Color(0xFF00E5FF)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.4 / fitScale
+        ..blendMode = BlendMode.plus;
+      canvas.drawCircle(wh.pos, wh.radius * 0.85, whRing);
+
+      canvas.drawCircle(
+          wh.pos, wh.radius * 0.52, Paint()..color = Colors.black);
+
+      // Мини полярные джеты в превью
+      for (int p = 0; p < 2; p++) {
+        final ang = p == 0 ? wh.poleAngle : wh.poleAngle + pi;
+        final jetEnd = wh.pos + Offset(cos(ang), sin(ang)) * 65.0;
+        final jetPaint = Paint()
+          ..color = const Color(0xFFE040FB).withValues(alpha: 0.75)
+          ..strokeWidth = 2.4 / fitScale
+          ..strokeCap = StrokeCap.round
+          ..blendMode = BlendMode.plus;
+        canvas.drawLine(wh.pos, jetEnd, jetPaint);
+      }
+    }
+
+    // 3. Орбиты звёзд
     final orbitPaint = Paint()
       ..color = Colors.white.withValues(alpha: 0.06)
       ..style = PaintingStyle.stroke
@@ -2808,7 +4063,7 @@ class ConstellationPreviewPainter extends CustomPainter {
       }
     }
 
-    // Тонкие линии созвездия между ближайшими звёздами
+    // 4. Тонкие линии созвездия
     final linePaint = Paint()
       ..color = Colors.white.withValues(alpha: 0.08)
       ..style = PaintingStyle.stroke
@@ -2824,7 +4079,7 @@ class ConstellationPreviewPainter extends CustomPainter {
       }
     }
 
-    // Отрисовка роя частиц (актуальное состояние)
+    // 5. Отрисовка роя частиц в превью
     for (final f in Faction.values) {
       if (f == Faction.neutral) continue;
       final pts = saveData.units
@@ -2841,11 +4096,38 @@ class ConstellationPreviewPainter extends CustomPainter {
       canvas.drawPoints(ui.PointMode.points, pts, unitPaint);
     }
 
-    // Отрисовка самих звёзд в превью
+    // 6. Отрисовка звёзд и атомных орбит (начиная с 3 уровня)
     for (final node in saveData.nodes) {
       final baseColor = factionColor(node.owner);
       final pulse = sin(globalTime * 2.2 + node.pulsePhase) * 2.0;
       final r = node.radius + pulse;
+
+      // Атомные орбиты крест-накрест для звёзд 3+ уровня
+      if (node.level >= 3) {
+        final double a = r * 1.75;
+        final double b = r * 0.62;
+        for (int o = 0; o < 2; o++) {
+          final double tilt = o == 0 ? -pi / 4 : pi / 4;
+          canvas.save();
+          canvas.translate(node.pos.dx, node.pos.dy);
+          canvas.rotate(tilt);
+          final orbitRect =
+              Rect.fromCenter(center: Offset.zero, width: a * 2, height: b * 2);
+          final miniOrbitPaint = Paint()
+            ..color = baseColor.withValues(alpha: 0.55)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.4 / fitScale
+            ..blendMode = BlendMode.plus;
+          canvas.drawOval(orbitRect, miniOrbitPaint);
+
+          final double eAng =
+              (o == 0 ? 1 : -1) * globalTime * 3.0 + o * (pi / 2);
+          final electronPos = Offset(a * cos(eAng), b * sin(eAng));
+          canvas.drawCircle(
+              electronPos, 2.5 / fitScale, Paint()..color = Colors.white);
+          canvas.restore();
+        }
+      }
 
       final glowPaint = Paint()
         ..color = baseColor.withValues(alpha: 0.45)
@@ -2881,6 +4163,8 @@ class AuraluxPainter extends CustomPainter {
   final List<BgStar> bgStars;
   final List<StarNode> nodes;
   final List<SwarmUnit> units;
+  final List<ObstacleWall> obstacles;
+  final List<Wormhole> wormholes;
   final List<SparkParticle> sparks;
   final List<PulseWave> waves;
   final List<FloatingText> floatingTexts;
@@ -2897,6 +4181,8 @@ class AuraluxPainter extends CustomPainter {
     required this.bgStars,
     required this.nodes,
     required this.units,
+    required this.obstacles,
+    required this.wormholes,
     required this.sparks,
     required this.waves,
     required this.floatingTexts,
@@ -3064,6 +4350,316 @@ class AuraluxPainter extends CustomPainter {
     canvas.drawCircle(node.pos, r * 0.91, rimPaint);
   }
 
+  // АТОМНЫЕ ОРБИТЫ С ЭЛЕКТРОНАМИ КРЕСТ-НАКРЕСТ (ДЛЯ ЗВЁЗД НАЧИНАЯ С 3 УРОВНЯ)
+  void _drawAtomicOrbits(Canvas canvas, StarNode node, Color baseColor) {
+    final double r = node.radius;
+    final double a = r * 1.76;
+    final double b = r * 0.62;
+
+    final List<double> orbitAngles = [-pi / 4, pi / 4];
+
+    for (int i = 0; i < orbitAngles.length; i++) {
+      final double tilt = orbitAngles[i];
+      final double dir = i == 0 ? 1.0 : -1.0;
+
+      canvas.save();
+      canvas.translate(node.pos.dx, node.pos.dy);
+      canvas.rotate(tilt);
+
+      final orbitRect =
+          Rect.fromCenter(center: Offset.zero, width: a * 2, height: b * 2);
+
+      // Внешнее свечение трека орбиты
+      final orbitGlowPaint = Paint()
+        ..color = baseColor.withValues(alpha: 0.38)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3.6
+        ..blendMode = BlendMode.plus
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3.5);
+      canvas.drawOval(orbitRect, orbitGlowPaint);
+
+      // Чёткая квантовая линия орбиты
+      final orbitTrackPaint = Paint()
+        ..color = Color.lerp(baseColor, Colors.white, 0.75)!
+            .withValues(alpha: 0.75)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.4
+        ..blendMode = BlendMode.plus;
+      canvas.drawOval(orbitRect, orbitTrackPaint);
+
+      // Положение электрона на орбите
+      final double electronAngle =
+          dir * globalTime * 3.2 + node.id * 1.7 + i * (pi / 2);
+      final double ex = a * cos(electronAngle);
+      final double ey = b * sin(electronAngle);
+      final electronPos = Offset(ex, ey);
+
+      // Хвост частиц за электроном
+      for (int t = 1; t <= 3; t++) {
+        final double trailAng = electronAngle - dir * t * 0.12;
+        final double tx = a * cos(trailAng);
+        final double ty = b * sin(trailAng);
+        final trailPaint = Paint()
+          ..color = baseColor.withValues(alpha: 0.45 / t)
+          ..blendMode = BlendMode.plus;
+        canvas.drawCircle(Offset(tx, ty), 2.2 / t, trailPaint);
+      }
+
+      // Квантовое гало электрона
+      final electronHaloPaint = Paint()
+        ..color = Colors.white.withValues(alpha: 0.9)
+        ..blendMode = BlendMode.plus
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4.5);
+      canvas.drawCircle(electronPos, 5.5, electronHaloPaint);
+
+      // Ядро электрона
+      final electronCorePaint = Paint()
+        ..color = Colors.white
+        ..blendMode = BlendMode.plus;
+      canvas.drawCircle(electronPos, 2.8, electronCorePaint);
+
+      canvas.restore();
+    }
+  }
+
+  // ОТРИСОВКА СТЕН ЛАБИРИНТА
+  void _drawObstacleWall(Canvas canvas, ObstacleWall wall) {
+    final ab = wall.end - wall.start;
+    final len = ab.distance;
+    if (len < 0.001) return;
+
+    final wallColor = wall.glowColor ?? const Color(0xFF00E5FF);
+
+    // Внешняя энергетическая аура барьера
+    final auraPaint = Paint()
+      ..color = wallColor.withValues(alpha: 0.24)
+      ..strokeWidth = wall.thickness + 16.0
+      ..strokeCap = StrokeCap.round
+      ..blendMode = BlendMode.plus
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 12.0);
+    canvas.drawLine(wall.start, wall.end, auraPaint);
+
+    // Тёмное тело космического монолита
+    final bodyPaint = Paint()
+      ..color = const Color(0xFF071226).withValues(alpha: 0.96)
+      ..strokeWidth = wall.thickness
+      ..strokeCap = StrokeCap.round;
+    canvas.drawLine(wall.start, wall.end, bodyPaint);
+
+    // Двойные светящиеся неоновые кромки стены
+    final norm = Offset(-ab.dy, ab.dx) / len;
+    final halfThick = wall.thickness * 0.45;
+    final edgePaint = Paint()
+      ..color = wallColor.withValues(alpha: 0.8)
+      ..strokeWidth = 1.6
+      ..blendMode = BlendMode.plus;
+    canvas.drawLine(
+        wall.start + norm * halfThick, wall.end + norm * halfThick, edgePaint);
+    canvas.drawLine(
+        wall.start - norm * halfThick, wall.end - norm * halfThick, edgePaint);
+
+    // Центральный энергетический канал
+    final conduitPaint = Paint()
+      ..color = Colors.white.withValues(alpha: 0.85)
+      ..strokeWidth = 1.8
+      ..strokeCap = StrokeCap.round
+      ..blendMode = BlendMode.plus;
+    canvas.drawLine(wall.start, wall.end, conduitPaint);
+
+    // Опорные узлы на концах стены
+    for (final pt in [wall.start, wall.end]) {
+      final pylonGlow = Paint()
+        ..color = wallColor.withValues(alpha: 0.85)
+        ..blendMode = BlendMode.plus
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6.0);
+      canvas.drawCircle(pt, wall.thickness * 0.55, pylonGlow);
+
+      final pylonCore = Paint()
+        ..color = Colors.white
+        ..blendMode = BlendMode.plus;
+      canvas.drawCircle(pt, wall.thickness * 0.28, pylonCore);
+    }
+  }
+
+  // ОТРИСОВКА ЧЕРВОТОЧИНЫ И ПОЛЯРНЫХ ДЖЕТОВ
+  void _drawWormhole(Canvas canvas, Wormhole wh) {
+    final double r = wh.radius;
+    const Color wormholeAccent = Color(0xFFE040FB);
+    const Color singularityCyan = Color(0xFF00E5FF);
+
+    // 1. Пространственная аура искажения
+    final ambientPaint = Paint()
+      ..color = wormholeAccent.withValues(alpha: wh.isErupting ? 0.65 : 0.28)
+      ..maskFilter =
+          MaskFilter.blur(BlurStyle.normal, wh.isErupting ? 65.0 : 40.0)
+      ..blendMode = BlendMode.plus;
+    canvas.drawCircle(wh.pos, r * (wh.isErupting ? 3.0 : 2.2), ambientPaint);
+
+    // 2. Полярные джеты и подсветка
+    for (int p = 0; p < 2; p++) {
+      final double jetAngle = p == 0 ? wh.poleAngle : wh.poleAngle + pi;
+      final double jetLen = wh.isErupting
+          ? (340.0 + sin(globalTime * 18.0 + p) * 45.0)
+          : (75.0 + sin(globalTime * 3.0 + p) * 15.0);
+      final double jetSpread = wh.isErupting ? 28.0 : 10.0;
+
+      canvas.save();
+      canvas.translate(wh.pos.dx, wh.pos.dy);
+      canvas.rotate(jetAngle);
+
+      final jetPath = Path();
+      jetPath.moveTo(r * 0.5, -4.0);
+      jetPath.lineTo(jetLen * 0.45, -jetSpread);
+      jetPath.lineTo(jetLen, 0.0);
+      jetPath.lineTo(jetLen * 0.45, jetSpread);
+      jetPath.lineTo(r * 0.5, 4.0);
+      jetPath.close();
+
+      // Плазменная аура джета
+      final jetGlowPaint = Paint()
+        ..color = (wh.isErupting ? wormholeAccent : singularityCyan)
+            .withValues(alpha: wh.isErupting ? 0.75 : 0.25)
+        ..maskFilter = MaskFilter.blur(
+            BlurStyle.normal, wh.isErupting ? 18.0 : 8.0)
+        ..blendMode = BlendMode.plus;
+      canvas.drawPath(jetPath, jetGlowPaint);
+
+      // Средний энергетический луч джета
+      final jetMidPaint = Paint()
+        ..color = singularityCyan.withValues(alpha: wh.isErupting ? 0.85 : 0.4)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4.0)
+        ..blendMode = BlendMode.plus;
+      canvas.drawPath(jetPath, jetMidPaint);
+
+      // Центральная яркая лазерная нить
+      final jetCorePaint = Paint()
+        ..color = Colors.white.withValues(alpha: wh.isErupting ? 0.95 : 0.6)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = wh.isErupting ? 3.2 : 1.4
+        ..blendMode = BlendMode.plus;
+      canvas.drawLine(
+          Offset(r * 0.4, 0), Offset(jetLen * 0.95, 0), jetCorePaint);
+
+      // Ромбы сжатия плазмы (Shock Diamonds) вдоль струи
+      if (wh.isErupting) {
+        for (double dFactor in [0.22, 0.44, 0.66, 0.84]) {
+          final double dx = jetLen * dFactor;
+          final double diaW = 12.0 * (1.0 - dFactor * 0.5);
+          final double diaH = 22.0 * (1.0 - dFactor * 0.5);
+          final diamondPath = Path()
+            ..moveTo(dx - diaW, 0)
+            ..lineTo(dx, -diaH * 0.5)
+            ..lineTo(dx + diaW, 0)
+            ..lineTo(dx, diaH * 0.5)
+            ..close();
+          final diamondPaint = Paint()
+            ..color = Colors.white.withValues(alpha: 0.9)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2.0
+            ..blendMode = BlendMode.plus;
+          canvas.drawPath(diamondPath, diamondPaint);
+        }
+      }
+
+      canvas.restore();
+    }
+
+    // 3. Вращающийся аккреционный диск
+    canvas.save();
+    canvas.translate(wh.pos.dx, wh.pos.dy);
+    canvas.rotate(wh.spinPhase);
+
+    final diskSweepPaint = Paint()
+      ..shader = ui.Gradient.sweep(
+        Offset.zero,
+        [
+          wormholeAccent.withValues(alpha: 0.7),
+          singularityCyan.withValues(alpha: 0.9),
+          Colors.white.withValues(alpha: 0.95),
+          wormholeAccent.withValues(alpha: 0.5),
+          wormholeAccent.withValues(alpha: 0.7),
+        ],
+        [0.0, 0.35, 0.5, 0.8, 1.0],
+      )
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = wh.isErupting ? 14.0 : 8.5
+      ..blendMode = BlendMode.plus
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5.0);
+    canvas.drawCircle(Offset.zero, r * 0.88, diskSweepPaint);
+
+    for (int i = 0; i < 3; i++) {
+      final double ringR = r * (0.65 + i * 0.14);
+      final ringPaint = Paint()
+        ..color = (i % 2 == 0 ? singularityCyan : wormholeAccent)
+            .withValues(alpha: 0.55)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.6
+        ..blendMode = BlendMode.plus;
+      canvas.drawCircle(Offset.zero, ringR, ringPaint);
+    }
+    canvas.restore();
+
+    // 4. Индикатор набора критической массы
+    final double chargeRatio =
+        (wh.storedUnits / wh.criticalMass).clamp(0.0, 1.0);
+    final chargeBgPaint = Paint()
+      ..color = Colors.white.withValues(alpha: 0.15)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.5;
+    canvas.drawCircle(wh.pos, r + 7.0, chargeBgPaint);
+
+    if (chargeRatio > 0 || wh.isErupting) {
+      final chargeArcPaint = Paint()
+        ..color = wh.isErupting
+            ? Colors.white
+            : Color.lerp(singularityCyan, wormholeAccent, chargeRatio)!
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 3.5
+        ..strokeCap = StrokeCap.round
+        ..blendMode = BlendMode.plus;
+      canvas.drawArc(
+        Rect.fromCircle(center: wh.pos, radius: r + 7.0),
+        -pi / 2,
+        (wh.isErupting ? 1.0 : chargeRatio) * 2 * pi,
+        false,
+        chargeArcPaint,
+      );
+    }
+
+    // 5. Фотонное кольцо
+    final photonRingPaint = Paint()
+      ..color = Colors.white.withValues(alpha: 0.95)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.2
+      ..blendMode = BlendMode.plus
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.5);
+    canvas.drawCircle(wh.pos, r * 0.56, photonRingPaint);
+
+    // 6. Горизонт событий (чёрная дыра)
+    final eventHorizonPaint = Paint()
+      ..color = const Color(0xFF000000)
+      ..style = PaintingStyle.fill;
+    canvas.drawCircle(wh.pos, r * 0.54, eventHorizonPaint);
+
+    // Текстовая плашка статуса
+    final labelText = wh.isErupting
+        ? 'ДЖЕТ АКТИВЕН'
+        : '${wh.storedUnits}/${wh.criticalMass}';
+    final tp = TextPainter(
+      text: TextSpan(
+        text: labelText,
+        style: TextStyle(
+          color: wh.isErupting ? Colors.cyanAccent : Colors.white70,
+          fontSize: 10.0,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 1.0,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    tp.paint(canvas, wh.pos + Offset(-tp.width / 2, r + 13.0));
+  }
+
   @override
   void paint(Canvas canvas, Size size) {
     final center = Offset(size.width / 2, size.height / 2);
@@ -3098,6 +4694,17 @@ class AuraluxPainter extends CustomPainter {
     canvas.translate(center.dx + cameraOffset.dx, center.dy + cameraOffset.dy);
     canvas.scale(cameraZoom);
 
+    // Отрисовка препятствий (стен лабиринтов)
+    for (final wall in obstacles) {
+      _drawObstacleWall(canvas, wall);
+    }
+
+    // Отрисовка червоточин и полярных джетов
+    for (final wh in wormholes) {
+      _drawWormhole(canvas, wh);
+    }
+
+    // Орбиты перемещающихся звёзд
     final orbitLinePaint = Paint()
       ..color = Colors.white.withValues(alpha: 0.04)
       ..style = PaintingStyle.stroke
@@ -3109,6 +4716,7 @@ class AuraluxPainter extends CustomPainter {
       }
     }
 
+    // Точки сбора
     for (final rp in rendezvousPoints) {
       final isSelectedRv = selectedRendezvous.contains(rp);
       final color = factionColor(rp.faction);
@@ -3136,6 +4744,7 @@ class AuraluxPainter extends CustomPainter {
       );
     }
 
+    // Волны расширения
     for (final w in waves) {
       final wavePaint = Paint()
         ..color = w.color.withValues(alpha: (w.life * 0.8).clamp(0.0, 1.0))
@@ -3146,11 +4755,17 @@ class AuraluxPainter extends CustomPainter {
       canvas.drawCircle(w.pos, w.radius, wavePaint);
     }
 
+    // Звёзды и их атомные орбиты
     for (final node in nodes) {
       final baseColor = factionColor(node.owner);
       final isSelected = selectedNodes.contains(node);
       final pulse = sin(globalTime * 2.2 + node.pulsePhase) * 2.0;
       final r = node.radius + pulse;
+
+      // Начиная с 3-го уровня создаётся модель атома с 2 орбитами крест-накрест
+      if (node.level >= 3) {
+        _drawAtomicOrbits(canvas, node, baseColor);
+      }
 
       final ambientCorona = Paint()
         ..color = baseColor.withValues(alpha: isSelected ? 0.52 : 0.26)
@@ -3278,6 +4893,7 @@ class AuraluxPainter extends CustomPainter {
       }
     }
 
+    // Отрисовка роя частиц
     for (final f in Faction.values) {
       if (f == Faction.neutral) continue;
       final fUnits = units.where((u) => !u.dead && u.faction == f).toList();
@@ -3354,56 +4970,37 @@ class AuraluxPainter extends CustomPainter {
           ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4.0);
         canvas.drawPoints(ui.PointMode.points, selectedOffsets, selMidGlow);
 
-        final selCorePaint = Paint()
+        final selCore = Paint()
           ..color = Colors.white
-          ..strokeWidth = 4.8
+          ..strokeWidth = 4.5
           ..strokeCap = StrokeCap.round
           ..blendMode = BlendMode.plus;
-        canvas.drawPoints(ui.PointMode.points, selectedOffsets, selCorePaint);
+        canvas.drawPoints(ui.PointMode.points, selectedOffsets, selCore);
       }
     }
 
+    // Искры
     for (final s in sparks) {
-      final alpha = (s.life / s.maxLife).clamp(0.0, 1.0);
-      final sparkGlow = Paint()
-        ..color = s.color.withValues(alpha: alpha * 0.7)
+      final sparkAura = Paint()
+        ..color = s.color.withValues(alpha: (s.life / s.maxLife) * 0.85)
         ..blendMode = BlendMode.plus
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3.5);
-      canvas.drawCircle(s.pos, s.size * alpha * 2.0, sparkGlow);
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3.0);
+      canvas.drawCircle(s.pos, s.size * 1.5, sparkAura);
 
       final sparkCore = Paint()
-        ..color = Colors.white.withValues(alpha: alpha)
+        ..color = Colors.white.withValues(alpha: (s.life / s.maxLife))
         ..blendMode = BlendMode.plus;
-      canvas.drawCircle(s.pos, s.size * alpha * 0.9, sparkCore);
+      canvas.drawCircle(s.pos, s.size * 0.75, sparkCore);
     }
 
-    if (selectionWorldRect != null) {
-      final fillPaint = Paint()
-        ..color = const Color(0xFF00E5FF).withValues(alpha: 0.035)
-        ..style = PaintingStyle.fill;
-      canvas.drawRect(selectionWorldRect!, fillPaint);
-
-      final dashPaint = Paint()
-        ..color = Colors.white.withValues(alpha: 0.28)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.2 / cameraZoom;
-
-      _drawDashedRect(
-        canvas,
-        selectionWorldRect!,
-        dashPaint,
-        dashWidth: 9.0 / cameraZoom,
-        dashSpace: 6.0 / cameraZoom,
-      );
-    }
-
+    // Всплывающие тексты
     for (final ft in floatingTexts) {
       final tp = TextPainter(
         text: TextSpan(
           text: ft.text,
           style: TextStyle(
             color: ft.color.withValues(alpha: ft.life.clamp(0.0, 1.0)),
-            fontSize: 13,
+            fontSize: 12.0,
             fontWeight: FontWeight.bold,
             letterSpacing: 1.2,
           ),
@@ -3411,6 +5008,20 @@ class AuraluxPainter extends CustomPainter {
         textDirection: TextDirection.ltr,
       )..layout();
       tp.paint(canvas, ft.pos - Offset(tp.width / 2, tp.height / 2));
+    }
+
+    // Рамка выделения
+    if (selectionWorldRect != null) {
+      final fillPaint = Paint()
+        ..color = const Color(0xFF00E5FF).withValues(alpha: 0.08)
+        ..style = PaintingStyle.fill;
+      canvas.drawRect(selectionWorldRect!, fillPaint);
+
+      final borderPaint = Paint()
+        ..color = const Color(0xFF00E5FF).withValues(alpha: 0.85)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.6;
+      _drawDashedRect(canvas, selectionWorldRect!, borderPaint);
     }
 
     canvas.restore();
