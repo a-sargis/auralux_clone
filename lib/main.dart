@@ -336,7 +336,7 @@ final List<GalaxyDefinition> galaxies = [
     type: GalaxyType.singularity,
     title: 'ГАЛАКТИКА СИНГУЛЯРНОСТЬ',
     subtitle: 'Червоточины и полярные джеты',
-    description: 'Накапливайте частицы в червоточинах и обрушивайте релятивистские потоки плазмы.',
+    description: 'Захватывайте червоточины, накапливайте массу и обрушивайте полярные потоки частиц.',
     primaryColor: Color(0xFFE040FB),
     icon: Icons.cyclone,
     constellations: [
@@ -628,54 +628,49 @@ class ObstacleWall {
   }
 }
 
+// ЧЕРВОТОЧИНА: МЕХАНИКА ЗАХВАТА КАК У ЗВЁЗД, ВИД СБОКУ С ТОЛЩИНОЙ И ПОДСВЕТКОЙ
 class Wormhole {
   final int id;
   Offset pos;
+  Faction owner;
+  double hp;
   final double radius;
   final int criticalMass;
   int storedUnits;
-  Faction lastAbsorbedFaction;
-  final Map<Faction, int> factionContributions;
   double poleAngle;
   bool isErupting;
   double eruptionTimer;
   final double eruptionDuration;
-  double jetAccumulator;
+  double jetSpawnTimer;
   double spinPhase;
   double pulsePhase;
 
   Wormhole({
     required this.id,
     required this.pos,
-    this.radius = 36.0,
+    this.owner = Faction.neutral,
+    this.hp = 50.0,
+    this.radius = 32.0,
     this.criticalMass = 30,
     this.storedUnits = 0,
-    this.lastAbsorbedFaction = Faction.neutral,
-    Map<Faction, int>? factionContributions,
     this.poleAngle = 0.0,
     this.isErupting = false,
     this.eruptionTimer = 0.0,
     this.eruptionDuration = 3.5,
-    this.jetAccumulator = 0.0,
+    this.jetSpawnTimer = 0.0,
     this.spinPhase = 0.0,
     this.pulsePhase = 0.0,
-  }) : factionContributions = factionContributions ??
-            {
-              Faction.player: 0,
-              Faction.enemy1: 0,
-              Faction.enemy2: 0,
-            };
+  });
 
   Map<String, dynamic> toJson() => {
         'id': id,
         'dx': pos.dx,
         'dy': pos.dy,
+        'owner': owner.index,
+        'hp': hp,
         'r': radius,
         'cm': criticalMass,
         'stored': storedUnits,
-        'lastFaction': lastAbsorbedFaction.index,
-        'contr': factionContributions
-            .map((k, v) => MapEntry(k.index.toString(), v)),
         'poleAng': poleAngle,
         'isErupting': isErupting,
         'erTimer': eruptionTimer,
@@ -685,32 +680,16 @@ class Wormhole {
       };
 
   factory Wormhole.fromJson(Map<String, dynamic> json) {
-    final contrRaw = json['contr'] as Map<String, dynamic>?;
-    final Map<Faction, int> contr = {
-      Faction.player: 0,
-      Faction.enemy1: 0,
-      Faction.enemy2: 0,
-    };
-    if (contrRaw != null) {
-      contrRaw.forEach((k, v) {
-        final fIdx = int.tryParse(k);
-        if (fIdx != null && fIdx >= 0 && fIdx < Faction.values.length) {
-          contr[Faction.values[fIdx]] = (v as num).toInt();
-        }
-      });
-    }
-
-    final int? lfIdx = json['lastFaction'] as int?;
+    final int? ownerIdx = json['owner'] as int?;
     return Wormhole(
       id: json['id'] as int,
       pos: Offset(
           (json['dx'] as num).toDouble(), (json['dy'] as num).toDouble()),
-      radius: (json['r'] as num?)?.toDouble() ?? 36.0,
+      owner: ownerIdx != null ? Faction.values[ownerIdx] : Faction.neutral,
+      hp: (json['hp'] as num?)?.toDouble() ?? 50.0,
+      radius: (json['r'] as num?)?.toDouble() ?? 32.0,
       criticalMass: json['cm'] as int? ?? 30,
       storedUnits: json['stored'] as int? ?? 0,
-      lastAbsorbedFaction:
-          lfIdx != null ? Faction.values[lfIdx] : Faction.neutral,
-      factionContributions: contr,
       poleAngle: (json['poleAng'] as num?)?.toDouble() ?? 0.0,
       isErupting: json['isErupting'] as bool? ?? false,
       eruptionTimer: (json['erTimer'] as num?)?.toDouble() ?? 0.0,
@@ -1349,10 +1328,12 @@ class _GameScreenState extends State<GameScreen>
       ));
     }
 
-    void addWormhole(Offset pos, {double radius = 38.0, int criticalMass = 30, double poleAngle = 0.0}) {
+    void addWormhole(Offset pos, {double radius = 32.0, int criticalMass = 25, double poleAngle = 0.0}) {
       genWormholes.add(Wormhole(
         id: whIdCounter++,
         pos: pos,
+        owner: Faction.neutral,
+        hp: 50.0,
         radius: radius,
         criticalMass: criticalMass,
         poleAngle: poleAngle,
@@ -1560,7 +1541,7 @@ class _GameScreenState extends State<GameScreen>
 
       // 8. SINGULARITY GATE (Центральная червоточина с полярными джетами)
       case ConstellationType.wormholeGate:
-        addWormhole(Offset.zero, radius: 42.0, criticalMass: 30, poleAngle: pi / 2);
+        addWormhole(Offset.zero, radius: 32.0, criticalMass: 25, poleAngle: pi / 2);
 
         addNode(const Offset(-500, 0), Faction.player, level: 1, startingUnits: 28);
         addNode(const Offset(500, 0), Faction.enemy1, level: 1, startingUnits: 28);
@@ -1578,8 +1559,8 @@ class _GameScreenState extends State<GameScreen>
 
       // 9. TWIN HORIZONS (Две червоточины с перекрёстными джетами)
       case ConstellationType.twinWormholes:
-        addWormhole(const Offset(-190, 0), radius: 36.0, criticalMass: 25, poleAngle: -pi / 4);
-        addWormhole(const Offset(190, 0), radius: 36.0, criticalMass: 25, poleAngle: pi / 4);
+        addWormhole(const Offset(-190, 0), radius: 30.0, criticalMass: 20, poleAngle: -pi / 4);
+        addWormhole(const Offset(190, 0), radius: 30.0, criticalMass: 20, poleAngle: pi / 4);
 
         addNode(const Offset(0, -380), Faction.player, level: 1, startingUnits: 28);
         addNode(const Offset(-460, 240), Faction.enemy1, level: 1, startingUnits: 26);
@@ -1593,7 +1574,7 @@ class _GameScreenState extends State<GameScreen>
 
       // 10. COSMIC CRUCIBLE (Гипер-сингулярность в центре)
       case ConstellationType.singularityCrucible:
-        addWormhole(Offset.zero, radius: 48.0, criticalMass: 40, poleAngle: 0.0);
+        addWormhole(Offset.zero, radius: 36.0, criticalMass: 35, poleAngle: 0.0);
 
         addNode(const Offset(-520, 0), Faction.player, level: 1, startingUnits: 32);
         addNode(const Offset(260, -450), Faction.enemy1, level: 1, startingUnits: 30);
@@ -1617,7 +1598,7 @@ class _GameScreenState extends State<GameScreen>
 
       // 11. ASTEROID CHASM (Гибрид: лабиринт из стен вокруг червоточины)
       case ConstellationType.labyrinthWormhole:
-        addWormhole(Offset.zero, radius: 40.0, criticalMass: 30, poleAngle: pi / 2);
+        addWormhole(Offset.zero, radius: 32.0, criticalMass: 25, poleAngle: pi / 2);
 
         addNode(const Offset(-480, 0), Faction.player, level: 1, startingUnits: 28);
         addNode(const Offset(480, 0), Faction.enemy1, level: 1, startingUnits: 28);
@@ -1638,7 +1619,6 @@ class _GameScreenState extends State<GameScreen>
 
       // 12. PULSAR OMEGA (Стартовые звёзды 3+ уровня с атомными орбитами)
       case ConstellationType.pulsarOmega:
-        // Все стартовые базы сразу 3-го уровня с активными атомными орбитами!
         addNode(const Offset(-460, 0), Faction.player, level: 3, hp: 100, startingUnits: 48);
         addNode(const Offset(230, -400), Faction.enemy1, level: 3, hp: 100, startingUnits: 44);
         addNode(const Offset(230, 400), Faction.enemy2, level: 3, hp: 100, startingUnits: 44);
@@ -1646,7 +1626,7 @@ class _GameScreenState extends State<GameScreen>
         // Центральная мега-звезда 3-го уровня
         addNode(Offset.zero, Faction.neutral, level: 3, hp: 100);
 
-        // Орбитальные сателлиты 2-го уровня
+        // Орбитальные сателлиты
         for (int i = 0; i < 6; i++) {
           double ang = (2 * pi / 6) * i;
           addNode(
@@ -1722,7 +1702,7 @@ class _GameScreenState extends State<GameScreen>
     setState(() {});
   }
 
-  // Физика столкновения частиц с препятствиями (стенами лабиринтов)
+  // Физика столкновения частиц со стенами лабиринтов
   Offset _resolveWallCollision(
       Offset pos, Offset vel, ObstacleWall wall, double unitRadius) {
     final ab = wall.end - wall.start;
@@ -1816,43 +1796,38 @@ class _GameScreenState extends State<GameScreen>
       rp.pulse += dt * 3.0;
     }
 
-    // 2. Червоточины: вращение, пульсация и извержение полярных джетов
+    // 2. Червоточины: вращение, регенерация и постепенный вылет струй джетов
     for (final wh in _wormholes) {
-      wh.spinPhase += dt * (wh.isErupting ? 5.5 : 1.5);
-      wh.pulsePhase += dt * (wh.isErupting ? 6.5 : 2.0);
+      wh.spinPhase += dt * (wh.isErupting ? 4.5 : 1.2);
+      wh.pulsePhase += dt * (wh.isErupting ? 5.5 : 1.8);
+
+      if (wh.owner != Faction.neutral && wh.hp < 100.0) {
+        wh.hp = min(100.0, wh.hp + 2.0 * dt);
+      }
 
       if (wh.isErupting) {
         wh.eruptionTimer -= dt;
-        wh.jetAccumulator += dt * 26.0;
+        wh.jetSpawnTimer += dt;
 
-        Faction jetFaction = wh.lastAbsorbedFaction;
-        int maxContr = -1;
-        for (final entry in wh.factionContributions.entries) {
-          if (entry.value > maxContr) {
-            maxContr = entry.value;
-            jetFaction = entry.key;
-          }
-        }
-        if (jetFaction == Faction.neutral) jetFaction = Faction.player;
+        // Частицы появляются не все сразу, а вылетают постепенно небольшими струями
+        while (wh.jetSpawnTimer >= 0.15) {
+          wh.jetSpawnTimer -= 0.15;
 
-        while (wh.jetAccumulator >= 1.0) {
-          wh.jetAccumulator -= 1.0;
-
-          // Спавн частиц из обоих полюсов (Северный и Южный джет)
           for (int p = 0; p < 2; p++) {
             final double poleBase = p == 0 ? wh.poleAngle : wh.poleAngle + pi;
-            final double spread = (_rng.nextDouble() - 0.5) * 0.24;
+            final double spread = (_rng.nextDouble() - 0.5) * 0.22;
             final double jetAng = poleBase + spread;
             final Offset spawnPos = wh.pos +
-                Offset(cos(poleBase), sin(poleBase)) * (wh.radius + 12.0);
-            final Offset jetVel =
-                Offset(cos(jetAng), sin(jetAng)) * (240.0 + _rng.nextDouble() * 50.0);
+                Offset(cos(poleBase), sin(poleBase)) * (wh.radius * 0.75);
+            // Умеренная скорость вылета, чтобы не улетали далеко от червоточины
+            final Offset jetVel = Offset(cos(jetAng), sin(jetAng)) *
+                (105.0 + _rng.nextDouble() * 25.0);
 
             _units.add(
               SwarmUnit(
                 pos: spawnPos,
                 vel: jetVel,
-                faction: jetFaction,
+                faction: wh.owner,
                 targetNode: null,
                 targetRendezvous: null,
                 targetWormhole: null,
@@ -1860,30 +1835,29 @@ class _GameScreenState extends State<GameScreen>
                 isUpgradingTarget: false,
                 orbitAngle: jetAng,
                 orbitDist: 40.0,
-                speed: 160.0 + _rng.nextDouble() * 40.0,
+                speed: 100.0 + _rng.nextDouble() * 30.0,
                 phase: _rng.nextDouble() * pi * 2,
               ),
             );
-            _spawnSparks(spawnPos, factionColor(jetFaction), 2, speed: 110.0);
+            _spawnSparks(spawnPos, factionColor(wh.owner), 2, speed: 70.0);
           }
         }
 
         if (wh.eruptionTimer <= 0) {
           wh.isErupting = false;
           wh.storedUnits = 0;
-          wh.factionContributions.clear();
           _waves.add(
             PulseWave(
               pos: wh.pos,
-              color: Colors.white,
-              maxRadius: wh.radius + 70.0,
+              color: factionColor(wh.owner),
+              maxRadius: 55.0,
             ),
           );
         }
       }
     }
 
-    // 3. Физика частиц
+    // 3. Физика перемещения частиц
     for (final u in _units) {
       if (u.dead) continue;
 
@@ -1896,52 +1870,18 @@ class _GameScreenState extends State<GameScreen>
         if (dist > wh.radius * 0.75) {
           Offset dir = toWh / dist;
           Offset perp = Offset(-dir.dy, dir.dx);
-          double swirl = sin(_globalTime * 3.5 + u.phase) * 0.25;
+          double swirl = sin(_globalTime * 3.5 + u.phase) * 0.22;
           Offset steer = (dir + perp * swirl);
           steer = steer / steer.distance;
           u.vel = Offset.lerp(
             u.vel,
-            steer * (u.speed * 1.45),
-            min(1.0, dt * 6.0),
+            steer * (u.speed * 1.35),
+            min(1.0, dt * 5.5),
           )!;
           u.pos += u.vel * dt;
         } else {
-          // Частица поглощается червоточиной
-          u.dead = true;
-          wh.storedUnits++;
-          wh.factionContributions[u.faction] =
-              (wh.factionContributions[u.faction] ?? 0) + 1;
-          wh.lastAbsorbedFaction = u.faction;
-          _spawnSparks(u.pos, factionColor(u.faction), 5, speed: 70.0);
-          _waves.add(
-            PulseWave(
-              pos: wh.pos,
-              color: factionColor(u.faction),
-              maxRadius: wh.radius + 20.0,
-            ),
-          );
-          _audio.playCapture();
-
-          // Достижение критической массы
-          if (wh.storedUnits >= wh.criticalMass && !wh.isErupting) {
-            wh.isErupting = true;
-            wh.eruptionTimer = wh.eruptionDuration;
-            _waves.add(
-              PulseWave(
-                pos: wh.pos,
-                color: const Color(0xFFE040FB),
-                maxRadius: wh.radius + 150.0,
-              ),
-            );
-            _spawnSparks(wh.pos, const Color(0xFF00E5FF), 40, speed: 200.0);
-            _floatingTexts.add(
-              FloatingText(
-                pos: wh.pos + const Offset(0, -50),
-                text: 'КРИТИЧЕСКАЯ МАССА! ДЖЕТ!',
-                color: const Color(0xFFE040FB),
-              ),
-            );
-          }
+          // Прибытие к червоточине: механика захвата или зарядки
+          _onUnitHitWormhole(u, wh);
         }
         continue;
       }
@@ -1988,9 +1928,10 @@ class _GameScreenState extends State<GameScreen>
       // Полёт к целевой звезде
       final target = u.targetNode;
       if (target == null) {
-        // Свободный полёт в космосе (например, после извержения джета)
+        // Свободный полёт в космосе (например, после вылета из джета)
+        // Плавное замедление, чтобы частицы оставались рядом с червоточиной
         u.pos += u.vel * dt;
-        u.vel *= pow(0.85, dt).toDouble();
+        u.vel *= pow(0.22, dt).toDouble();
         continue;
       }
 
@@ -2076,7 +2017,7 @@ class _GameScreenState extends State<GameScreen>
       }
     }
 
-    // 4. Столкновения с препятствиями (стенами лабиринтов)
+    // 4. Столкновения со стенами лабиринтов
     if (_obstacles.isNotEmpty) {
       for (final u in _units) {
         if (u.dead) continue;
@@ -2121,6 +2062,87 @@ class _GameScreenState extends State<GameScreen>
       _runAI(Faction.enemy1);
       _runAI(Faction.enemy2);
       _checkVictoryCondition();
+    }
+  }
+
+  // МЕХАНИКА ЗАХВАТА И ЗАРЯДКИ ЧЕРВОТОЧИНЫ (КАК У ЗВЁЗД)
+  void _onUnitHitWormhole(SwarmUnit unit, Wormhole wh) {
+    final color = factionColor(unit.faction);
+    unit.dead = true;
+
+    // 1. Своя червоточина: восстановление HP или зарядка критической массы
+    if (wh.owner == unit.faction) {
+      if (wh.hp < 99.5) {
+        wh.hp = min(100.0, wh.hp + 3.0);
+        _spawnSparks(unit.pos, color, 4, speed: 60.0);
+        return;
+      }
+
+      if (!wh.isErupting) {
+        wh.storedUnits++;
+        _spawnSparks(unit.pos, color, 5, speed: 65.0);
+        _waves.add(PulseWave(pos: wh.pos, color: color, maxRadius: 40.0));
+
+        if (wh.storedUnits >= wh.criticalMass) {
+          wh.isErupting = true;
+          wh.eruptionTimer = wh.eruptionDuration;
+          wh.jetSpawnTimer = 0.0;
+
+          _waves.add(PulseWave(
+            pos: wh.pos,
+            color: color,
+            maxRadius: 85.0,
+          ));
+          _spawnSparks(wh.pos, color, 30, speed: 140.0);
+          _floatingTexts.add(FloatingText(
+            pos: wh.pos + const Offset(0, -42),
+            text: 'КРИТИЧЕСКАЯ МАССА! ДЖЕТЫ!',
+            color: color,
+          ));
+          if (unit.faction == Faction.player) {
+            _audio.playUpgrade();
+          }
+        }
+      }
+      return;
+    }
+
+    // 2. Вражеская или нейтральная червоточина: урон и захват
+    wh.hp -= 2.6;
+    _spawnSparks(unit.pos, color, 5, speed: 70.0);
+
+    if (wh.hp <= 0) {
+      if (wh.owner != Faction.neutral) {
+        // Червоточина была захвачена врагом: разрушение до нейтрального состояния
+        wh.owner = Faction.neutral;
+        wh.hp = 25.0;
+        wh.storedUnits = 0;
+        wh.isErupting = false;
+        _waves.add(
+            PulseWave(pos: wh.pos, color: Colors.white, maxRadius: 85.0));
+        _spawnSparks(wh.pos, Colors.white, 24, speed: 130.0);
+        _floatingTexts.add(FloatingText(
+          pos: wh.pos + const Offset(0, -38),
+          text: 'ЧЕРВОТОЧИНА НЕЙТРАЛИЗОВАНА',
+          color: Colors.white70,
+        ));
+      } else {
+        // Червоточина была нейтральной: успешный захват фракцией
+        wh.owner = unit.faction;
+        wh.hp = 100.0;
+        wh.storedUnits = 0;
+        wh.isErupting = false;
+        _waves.add(PulseWave(pos: wh.pos, color: color, maxRadius: 105.0));
+        _spawnSparks(wh.pos, color, 30, speed: 150.0);
+        _floatingTexts.add(FloatingText(
+          pos: wh.pos + const Offset(0, -38),
+          text: 'ЧЕРВОТОЧИНА ЗАХВАЧЕНА!',
+          color: color,
+        ));
+        if (unit.faction == Faction.player) {
+          _audio.playCapture();
+        }
+      }
     }
   }
 
@@ -2277,24 +2299,46 @@ class _GameScreenState extends State<GameScreen>
     final myNodes = _nodes.where((n) => n.owner == aiFaction).toList();
     if (myNodes.isEmpty) return;
 
-    // Шанс отправить частицы в червоточину для вызова извержения
-    if (_wormholes.isNotEmpty && _rng.nextDouble() < 0.28) {
+    // AI активно атакует вражеские червоточины и заряжает свои захваченные
+    if (_wormholes.isNotEmpty) {
       for (final wh in _wormholes) {
-        if (!wh.isErupting && wh.storedUnits < wh.criticalMass) {
-          for (final srcNode in myNodes) {
-            final available = _getOrbitingNodeUnits(srcNode, aiFaction);
-            if (available.length > 22) {
-              int sendCount = min(
-                  available.length - 10, wh.criticalMass - wh.storedUnits);
-              for (int i = 0; i < sendCount; i++) {
-                final u = available[i];
-                u.targetNode = null;
-                u.targetRendezvous = null;
-                u.targetWormhole = wh;
-                u.isOrbiting = false;
-                u.isUpgradingTarget = false;
+        if (wh.owner != aiFaction) {
+          // Чужая или нейтральная червоточина: шанс отправить штурм для захвата
+          if (_rng.nextDouble() < 0.35) {
+            for (final srcNode in myNodes) {
+              final available = _getOrbitingNodeUnits(srcNode, aiFaction);
+              if (available.length > 22) {
+                int sendCount = (available.length * 0.75).ceil();
+                for (int i = 0; i < sendCount; i++) {
+                  final u = available[i];
+                  u.targetNode = null;
+                  u.targetRendezvous = null;
+                  u.targetWormhole = wh;
+                  u.isOrbiting = false;
+                  u.isUpgradingTarget = false;
+                }
+                break;
               }
-              break;
+            }
+          }
+        } else if (!wh.isErupting && wh.storedUnits < wh.criticalMass) {
+          // Своя червоточина: отправка частиц на зарядку критической массы
+          if (_rng.nextDouble() < 0.4) {
+            for (final srcNode in myNodes) {
+              final available = _getOrbitingNodeUnits(srcNode, aiFaction);
+              if (available.length > 18) {
+                int sendCount = min(
+                    available.length - 8, wh.criticalMass - wh.storedUnits);
+                for (int i = 0; i < sendCount; i++) {
+                  final u = available[i];
+                  u.targetNode = null;
+                  u.targetRendezvous = null;
+                  u.targetWormhole = wh;
+                  u.isOrbiting = false;
+                  u.isUpgradingTarget = false;
+                }
+                break;
+              }
             }
           }
         }
@@ -2511,8 +2555,10 @@ class _GameScreenState extends State<GameScreen>
       _waves.add(
         PulseWave(
           pos: target.pos,
-          color: const Color(0xFFE040FB),
-          maxRadius: target.radius + 42,
+          color: factionColor(target.owner == Faction.neutral
+              ? Faction.player
+              : target.owner),
+          maxRadius: target.radius + 36,
         ),
       );
       _audio.playLaunch();
@@ -2614,7 +2660,7 @@ class _GameScreenState extends State<GameScreen>
     double bestDist = double.infinity;
     for (final wh in _wormholes) {
       double d = (wh.pos - worldPos).distance;
-      if (d <= wh.radius + 24.0 && d < bestDist) {
+      if (d <= wh.radius + 26.0 && d < bestDist) {
         bestDist = d;
         closest = wh;
       }
@@ -2769,18 +2815,29 @@ class _GameScreenState extends State<GameScreen>
         HapticFeedback.mediumImpact();
         _clearSelection();
       } else {
+        String msg;
+        if (hitWormhole.owner == Faction.neutral) {
+          msg = 'ЧЕРВОТОЧИНА [НЕЙТРАЛЬНА]';
+        } else if (hitWormhole.isErupting) {
+          msg = 'ДЖЕТ АКТИВЕН';
+        } else {
+          msg = 'ЧЕРВОТОЧИНА [${hitWormhole.storedUnits}/${hitWormhole.criticalMass}]';
+        }
+
         _floatingTexts.add(
           FloatingText(
             pos: hitWormhole.pos + Offset(0, -hitWormhole.radius - 18),
-            text: 'ЧЕРВОТОЧИНА [${hitWormhole.storedUnits}/${hitWormhole.criticalMass}]',
-            color: const Color(0xFFE040FB),
+            text: msg,
+            color: factionColor(hitWormhole.owner == Faction.neutral
+                ? Faction.player
+                : hitWormhole.owner),
           ),
         );
         _waves.add(
           PulseWave(
             pos: hitWormhole.pos,
-            color: const Color(0xFFE040FB),
-            maxRadius: hitWormhole.radius + 32,
+            color: factionColor(hitWormhole.owner),
+            maxRadius: hitWormhole.radius + 28,
           ),
         );
         HapticFeedback.selectionClick();
@@ -3042,7 +3099,6 @@ class _GameScreenState extends State<GameScreen>
           borderRadius: BorderRadius.circular(20),
           child: Stack(
             children: [
-              // Анимированная галактическая спираль на фоне карточки
               Positioned.fill(
                 child: CustomPaint(
                   painter: GalaxySpiralPainter(
@@ -4021,35 +4077,47 @@ class ConstellationPreviewPainter extends CustomPainter {
       canvas.drawLine(wall.start, wall.end, corePaint);
     }
 
-    // 2. Червоточины в превью
+    // 2. Червоточины в превью (вид сбоку с толщиной и подсветкой)
     for (final wh in saveData.wormholes) {
-      final whGlow = Paint()
-        ..color = const Color(0xFFE040FB).withValues(alpha: 0.55)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 12.0)
-        ..blendMode = BlendMode.plus;
-      canvas.drawCircle(wh.pos, wh.radius * 1.6, whGlow);
+      final baseColor = factionColor(wh.owner);
+      final accent = wh.owner == Faction.neutral ? Colors.white70 : baseColor;
 
-      final whRing = Paint()
-        ..color = const Color(0xFF00E5FF)
+      canvas.save();
+      canvas.translate(wh.pos.dx, wh.pos.dy);
+      canvas.rotate(wh.poleAngle + pi / 2);
+
+      // Тело червоточины сбоку
+      final bodyRect =
+          Rect.fromCenter(center: Offset.zero, width: 44.0, height: 12.0);
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(bodyRect, const Radius.circular(5.0)),
+        Paint()..color = accent.withValues(alpha: 0.4),
+      );
+
+      // Верхний и нижний подсвеченные края
+      final topOval =
+          Rect.fromCenter(center: const Offset(0, -6.0), width: 44.0, height: 10.0);
+      final botOval =
+          Rect.fromCenter(center: const Offset(0, 6.0), width: 44.0, height: 10.0);
+
+      final rimPaint = Paint()
+        ..color = accent
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.4 / fitScale
+        ..strokeWidth = 1.8 / fitScale
         ..blendMode = BlendMode.plus;
-      canvas.drawCircle(wh.pos, wh.radius * 0.85, whRing);
+      canvas.drawOval(topOval, rimPaint);
+      canvas.drawOval(botOval, rimPaint);
 
-      canvas.drawCircle(
-          wh.pos, wh.radius * 0.52, Paint()..color = Colors.black);
+      // Небольшие струи джетов с двух сторон
+      final jetPaint = Paint()
+        ..color = accent
+        ..strokeWidth = 2.0 / fitScale
+        ..strokeCap = StrokeCap.round
+        ..blendMode = BlendMode.plus;
+      canvas.drawLine(const Offset(0, -6.0), const Offset(0, -28.0), jetPaint);
+      canvas.drawLine(const Offset(0, 6.0), const Offset(0, 28.0), jetPaint);
 
-      // Мини полярные джеты в превью
-      for (int p = 0; p < 2; p++) {
-        final ang = p == 0 ? wh.poleAngle : wh.poleAngle + pi;
-        final jetEnd = wh.pos + Offset(cos(ang), sin(ang)) * 65.0;
-        final jetPaint = Paint()
-          ..color = const Color(0xFFE040FB).withValues(alpha: 0.75)
-          ..strokeWidth = 2.4 / fitScale
-          ..strokeCap = StrokeCap.round
-          ..blendMode = BlendMode.plus;
-        canvas.drawLine(wh.pos, jetEnd, jetPaint);
-      }
+      canvas.restore();
     }
 
     // 3. Орбиты звёзд
@@ -4481,175 +4549,240 @@ class AuraluxPainter extends CustomPainter {
     }
   }
 
-  // ОТРИСОВКА ЧЕРВОТОЧИНЫ И ПОЛЯРНЫХ ДЖЕТОВ
+  // ОТРИСОВКА ЧЕРВОТОЧИНЫ: ВИД СБОКУ С ТОЛЩИНОЙ, ПОДСВЕТКОЙ И КОМПАКТНЫМИ ДЖЕТАМИ
   void _drawWormhole(Canvas canvas, Wormhole wh) {
-    final double r = wh.radius;
-    const Color wormholeAccent = Color(0xFFE040FB);
-    const Color singularityCyan = Color(0xFF00E5FF);
+    final baseColor = factionColor(wh.owner);
+    final isNeutral = wh.owner == Faction.neutral;
+    final accentColor = isNeutral ? const Color(0xFF9E9E9E) : baseColor;
 
-    // 1. Пространственная аура искажения
-    final ambientPaint = Paint()
-      ..color = wormholeAccent.withValues(alpha: wh.isErupting ? 0.65 : 0.28)
-      ..maskFilter =
-          MaskFilter.blur(BlurStyle.normal, wh.isErupting ? 65.0 : 40.0)
-      ..blendMode = BlendMode.plus;
-    canvas.drawCircle(wh.pos, r * (wh.isErupting ? 3.0 : 2.2), ambientPaint);
+    // Параметры вида сбоку
+    const double rx = 28.0; // Половина горизонтальной ширины горловины
+    const double ry = 8.5;  // Половина вертикального раскрытия эллипса
+    const double thickness = 14.0; // Видимая толщина червоточины сбоку
+    const double halfT = thickness / 2.0;
 
-    // 2. Полярные джеты и подсветка
-    for (int p = 0; p < 2; p++) {
-      final double jetAngle = p == 0 ? wh.poleAngle : wh.poleAngle + pi;
-      final double jetLen = wh.isErupting
-          ? (340.0 + sin(globalTime * 18.0 + p) * 45.0)
-          : (75.0 + sin(globalTime * 3.0 + p) * 15.0);
-      final double jetSpread = wh.isErupting ? 28.0 : 10.0;
-
-      canvas.save();
-      canvas.translate(wh.pos.dx, wh.pos.dy);
-      canvas.rotate(jetAngle);
-
-      final jetPath = Path();
-      jetPath.moveTo(r * 0.5, -4.0);
-      jetPath.lineTo(jetLen * 0.45, -jetSpread);
-      jetPath.lineTo(jetLen, 0.0);
-      jetPath.lineTo(jetLen * 0.45, jetSpread);
-      jetPath.lineTo(r * 0.5, 4.0);
-      jetPath.close();
-
-      // Плазменная аура джета
-      final jetGlowPaint = Paint()
-        ..color = (wh.isErupting ? wormholeAccent : singularityCyan)
-            .withValues(alpha: wh.isErupting ? 0.75 : 0.25)
-        ..maskFilter = MaskFilter.blur(
-            BlurStyle.normal, wh.isErupting ? 18.0 : 8.0)
-        ..blendMode = BlendMode.plus;
-      canvas.drawPath(jetPath, jetGlowPaint);
-
-      // Средний энергетический луч джета
-      final jetMidPaint = Paint()
-        ..color = singularityCyan.withValues(alpha: wh.isErupting ? 0.85 : 0.4)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4.0)
-        ..blendMode = BlendMode.plus;
-      canvas.drawPath(jetPath, jetMidPaint);
-
-      // Центральная яркая лазерная нить
-      final jetCorePaint = Paint()
-        ..color = Colors.white.withValues(alpha: wh.isErupting ? 0.95 : 0.6)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = wh.isErupting ? 3.2 : 1.4
-        ..blendMode = BlendMode.plus;
-      canvas.drawLine(
-          Offset(r * 0.4, 0), Offset(jetLen * 0.95, 0), jetCorePaint);
-
-      // Ромбы сжатия плазмы (Shock Diamonds) вдоль струи
-      if (wh.isErupting) {
-        for (double dFactor in [0.22, 0.44, 0.66, 0.84]) {
-          final double dx = jetLen * dFactor;
-          final double diaW = 12.0 * (1.0 - dFactor * 0.5);
-          final double diaH = 22.0 * (1.0 - dFactor * 0.5);
-          final diamondPath = Path()
-            ..moveTo(dx - diaW, 0)
-            ..lineTo(dx, -diaH * 0.5)
-            ..lineTo(dx + diaW, 0)
-            ..lineTo(dx, diaH * 0.5)
-            ..close();
-          final diamondPaint = Paint()
-            ..color = Colors.white.withValues(alpha: 0.9)
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 2.0
-            ..blendMode = BlendMode.plus;
-          canvas.drawPath(diamondPath, diamondPaint);
-        }
-      }
-
-      canvas.restore();
-    }
-
-    // 3. Вращающийся аккреционный диск
     canvas.save();
     canvas.translate(wh.pos.dx, wh.pos.dy);
-    canvas.rotate(wh.spinPhase);
+    // Ориентация: джеты направлены вдоль poleAngle
+    canvas.rotate(wh.poleAngle + pi / 2);
 
-    final diskSweepPaint = Paint()
-      ..shader = ui.Gradient.sweep(
-        Offset.zero,
-        [
-          wormholeAccent.withValues(alpha: 0.7),
-          singularityCyan.withValues(alpha: 0.9),
-          Colors.white.withValues(alpha: 0.95),
-          wormholeAccent.withValues(alpha: 0.5),
-          wormholeAccent.withValues(alpha: 0.7),
-        ],
-        [0.0, 0.35, 0.5, 0.8, 1.0],
-      )
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = wh.isErupting ? 14.0 : 8.5
-      ..blendMode = BlendMode.plus
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5.0);
-    canvas.drawCircle(Offset.zero, r * 0.88, diskSweepPaint);
+    // 1. Внешнее фоновое пространственное свечение
+    final ambientGlow = Paint()
+      ..color = accentColor.withValues(alpha: wh.isErupting ? 0.42 : 0.2)
+      ..maskFilter =
+          MaskFilter.blur(BlurStyle.normal, wh.isErupting ? 30.0 : 18.0)
+      ..blendMode = BlendMode.plus;
+    canvas.drawOval(
+      Rect.fromCenter(
+          center: Offset.zero,
+          width: rx * 2.7,
+          height: (thickness + ry * 2) * 1.5),
+      ambientGlow,
+    );
 
-    for (int i = 0; i < 3; i++) {
-      final double ringR = r * (0.65 + i * 0.14);
-      final ringPaint = Paint()
-        ..color = (i % 2 == 0 ? singularityCyan : wormholeAccent)
-            .withValues(alpha: 0.55)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.6
+    // 2. Компактные струи джетов с двух сторон (полюса в -Y и +Y)
+    final double jetLen = wh.isErupting
+        ? (54.0 + sin(globalTime * 14.0) * 8.0)
+        : 12.0;
+    final double jetSpread = wh.isErupting ? 11.0 : 4.5;
+
+    for (int p = 0; p < 2; p++) {
+      final double dirY = p == 0 ? -1.0 : 1.0;
+      final double baseY = dirY * halfT;
+      final double tipY = baseY + dirY * jetLen;
+
+      final jetPath = Path()
+        ..moveTo(-jetSpread * 0.45, baseY)
+        ..lineTo(-jetSpread, baseY + dirY * jetLen * 0.4)
+        ..lineTo(0, tipY)
+        ..lineTo(jetSpread, baseY + dirY * jetLen * 0.4)
+        ..lineTo(jetSpread * 0.45, baseY)
+        ..close();
+
+      // Свечение струи
+      final jetPlumePaint = Paint()
+        ..color = accentColor.withValues(alpha: wh.isErupting ? 0.75 : 0.25)
+        ..maskFilter =
+            MaskFilter.blur(BlurStyle.normal, wh.isErupting ? 6.5 : 3.0)
         ..blendMode = BlendMode.plus;
-      canvas.drawCircle(Offset.zero, ringR, ringPaint);
+      canvas.drawPath(jetPath, jetPlumePaint);
+
+      // Яркий сердечник струи
+      final jetCorePaint = Paint()
+        ..color = Colors.white.withValues(alpha: wh.isErupting ? 0.95 : 0.5)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = wh.isErupting ? 2.4 : 1.2
+        ..blendMode = BlendMode.plus;
+      canvas.drawLine(Offset(0, baseY), Offset(0, tipY * 0.95), jetCorePaint);
+
+      // Ромб сжатия (Shock diamond)
+      if (wh.isErupting) {
+        final double midY = baseY + dirY * jetLen * 0.5;
+        final shockDiamond = Path()
+          ..moveTo(-4.0, midY)
+          ..lineTo(0, midY - dirY * 4.0)
+          ..lineTo(4.0, midY)
+          ..lineTo(0, midY + dirY * 4.0)
+          ..close();
+        final diamondPaint = Paint()
+          ..color = Colors.white.withValues(alpha: 0.9)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.6
+          ..blendMode = BlendMode.plus;
+        canvas.drawPath(shockDiamond, diamondPaint);
+      }
     }
-    canvas.restore();
 
-    // 4. Индикатор набора критической массы
-    final double chargeRatio =
-        (wh.storedUnits / wh.criticalMass).clamp(0.0, 1.0);
-    final chargeBgPaint = Paint()
-      ..color = Colors.white.withValues(alpha: 0.15)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 2.5;
-    canvas.drawCircle(wh.pos, r + 7.0, chargeBgPaint);
+    // 3. Тело червоточины сбоку (толщина между верхним и нижним краем)
+    final bodyRect = Rect.fromCenter(
+      center: Offset.zero,
+      width: rx * 2.0,
+      height: thickness,
+    );
+    final bodyPaint = Paint()
+      ..shader = ui.Gradient.linear(
+        const Offset(0, -halfT),
+        const Offset(0, halfT),
+        [
+          accentColor.withValues(alpha: 0.35),
+          const Color(0xFF030713).withValues(alpha: 0.98),
+          accentColor.withValues(alpha: 0.35),
+        ],
+        [0.0, 0.5, 1.0],
+      );
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(bodyRect, const Radius.circular(ry)),
+      bodyPaint,
+    );
 
-    if (chargeRatio > 0 || wh.isErupting) {
-      final chargeArcPaint = Paint()
-        ..color = wh.isErupting
-            ? Colors.white
-            : Color.lerp(singularityCyan, wormholeAccent, chargeRatio)!
+    // Внутренние волокна сингулярности в толщине
+    for (int i = -2; i <= 2; i++) {
+      final double xOffset = i * (rx * 0.38);
+      final double wobble = sin(globalTime * 3.5 + i) * 2.0;
+      final strandPaint = Paint()
+        ..color = accentColor.withValues(alpha: 0.35)
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 3.5
-        ..strokeCap = StrokeCap.round
+        ..strokeWidth = 1.3
         ..blendMode = BlendMode.plus;
-      canvas.drawArc(
-        Rect.fromCircle(center: wh.pos, radius: r + 7.0),
-        -pi / 2,
-        (wh.isErupting ? 1.0 : chargeRatio) * 2 * pi,
-        false,
-        chargeArcPaint,
+      canvas.drawLine(
+        Offset(xOffset + wobble, -halfT),
+        Offset(xOffset - wobble, halfT),
+        strandPaint,
       );
     }
 
-    // 5. Фотонное кольцо
-    final photonRingPaint = Paint()
-      ..color = Colors.white.withValues(alpha: 0.95)
+    // 4. Подсвечивание снизу (Нижний обод)
+    final bottomRimRect = Rect.fromCenter(
+      center: const Offset(0, halfT),
+      width: rx * 2.0,
+      height: ry * 2.0,
+    );
+    final bottomAuraPaint = Paint()
+      ..color = accentColor.withValues(alpha: 0.6)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 4.0
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4.0)
+      ..blendMode = BlendMode.plus;
+    canvas.drawOval(bottomRimRect, bottomAuraPaint);
+
+    final bottomRimPaint = Paint()
+      ..color =
+          Color.lerp(accentColor, Colors.white, 0.6)!.withValues(alpha: 0.9)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.8
+      ..blendMode = BlendMode.plus;
+    canvas.drawOval(bottomRimRect, bottomRimPaint);
+
+    // Световой нижний акцент
+    final bottomLipPaint = Paint()
+      ..color = Colors.white
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2.2
-      ..blendMode = BlendMode.plus
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 2.5);
-    canvas.drawCircle(wh.pos, r * 0.56, photonRingPaint);
+      ..strokeCap = StrokeCap.round
+      ..blendMode = BlendMode.plus;
+    canvas.drawArc(bottomRimRect, 0.2, pi - 0.4, false, bottomLipPaint);
 
-    // 6. Горизонт событий (чёрная дыра)
-    final eventHorizonPaint = Paint()
+    // 5. Тёмный провал сингулярности внутри верхнего отверстия
+    final topRimRect = Rect.fromCenter(
+      center: const Offset(0, -halfT),
+      width: rx * 2.0,
+      height: ry * 2.0,
+    );
+    final throatHolePaint = Paint()
       ..color = const Color(0xFF000000)
       ..style = PaintingStyle.fill;
-    canvas.drawCircle(wh.pos, r * 0.54, eventHorizonPaint);
+    canvas.drawOval(topRimRect, throatHolePaint);
 
-    // Текстовая плашка статуса
-    final labelText = wh.isErupting
-        ? 'ДЖЕТ АКТИВЕН'
-        : '${wh.storedUnits}/${wh.criticalMass}';
+    // 6. Подсвечивание сверху (Верхний обод)
+    final topAuraPaint = Paint()
+      ..color = accentColor.withValues(alpha: 0.6)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 4.0
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4.0)
+      ..blendMode = BlendMode.plus;
+    canvas.drawOval(topRimRect, topAuraPaint);
+
+    final topRimPaint = Paint()
+      ..color =
+          Color.lerp(accentColor, Colors.white, 0.6)!.withValues(alpha: 0.9)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.8
+      ..blendMode = BlendMode.plus;
+    canvas.drawOval(topRimRect, topRimPaint);
+
+    // Световой верхний акцент
+    final topLipPaint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2.2
+      ..strokeCap = StrokeCap.round
+      ..blendMode = BlendMode.plus;
+    canvas.drawArc(topRimRect, pi + 0.2, pi - 0.4, false, topLipPaint);
+
+    // 7. Полоса здоровья (если червоточина повреждена)
+    if (wh.hp < 99.5) {
+      final hpBarRect = Rect.fromCenter(
+        center: const Offset(0, halfT + ry + 4.0),
+        width: rx * 1.6,
+        height: 2.8,
+      );
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(hpBarRect, const Radius.circular(1.5)),
+        Paint()..color = Colors.white24,
+      );
+      final fillW = (rx * 1.6) * (wh.hp / 100.0).clamp(0.0, 1.0);
+      final hpFillRect = Rect.fromLTWH(
+        hpBarRect.left,
+        hpBarRect.top,
+        fillW,
+        2.8,
+      );
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(hpFillRect, const Radius.circular(1.5)),
+        Paint()..color = Colors.white,
+      );
+    }
+
+    canvas.restore();
+
+    // 8. Текстовая плашка статуса в мировых координатах
+    String labelText;
+    if (wh.owner == Faction.neutral) {
+      labelText =
+          wh.hp < 99.5 ? 'ЗАХВАТ ${(100.0 - wh.hp).toInt()}%' : 'ЧЕРВОТОЧИНА';
+    } else if (wh.isErupting) {
+      labelText = 'ДЖЕТ АКТИВЕН';
+    } else {
+      labelText = '${wh.storedUnits}/${wh.criticalMass}';
+    }
+
     final tp = TextPainter(
       text: TextSpan(
         text: labelText,
         style: TextStyle(
-          color: wh.isErupting ? Colors.cyanAccent : Colors.white70,
+          color: wh.isErupting
+              ? Colors.cyanAccent
+              : (isNeutral ? Colors.white70 : accentColor),
           fontSize: 10.0,
           fontWeight: FontWeight.w700,
           letterSpacing: 1.0,
@@ -4657,7 +4790,7 @@ class AuraluxPainter extends CustomPainter {
       ),
       textDirection: TextDirection.ltr,
     )..layout();
-    tp.paint(canvas, wh.pos + Offset(-tp.width / 2, r + 13.0));
+    tp.paint(canvas, wh.pos + Offset(-tp.width / 2, 22.0));
   }
 
   @override
@@ -4694,12 +4827,12 @@ class AuraluxPainter extends CustomPainter {
     canvas.translate(center.dx + cameraOffset.dx, center.dy + cameraOffset.dy);
     canvas.scale(cameraZoom);
 
-    // Отрисовка препятствий (стен лабиринтов)
+    // Отрисовка стен лабиринтов
     for (final wall in obstacles) {
       _drawObstacleWall(canvas, wall);
     }
 
-    // Отрисовка червоточин и полярных джетов
+    // Отрисовка червоточин (вид сбоку с подсветкой и джетами)
     for (final wh in wormholes) {
       _drawWormhole(canvas, wh);
     }
